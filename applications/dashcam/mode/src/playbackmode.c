@@ -21,6 +21,10 @@ int32_t MODEMNG_OpenPlayBackMode(void)
     s32Ret = MEDIA_PlayBackSerInit();
     MODEMNG_CHECK_RET(s32Ret, MODE_EINVAL, "MEDIA_PlayBackSerInit fail");
 
+    /* Clear leftover preview frame before playback display resumes. */
+    s32Ret = MEDIA_DISP_ClearBuf();
+    MODEMNG_CHECK_RET(s32Ret, MODE_EINVAL, "DISP clear");
+
     MEDIA_PARAM_INIT_S *SysMediaParams = MEDIA_GetCtx();
     PLAYER_SERVICE_HANDLE_T PlaySerhdl = SysMediaParams->SysServices.PsHdl;
 
@@ -52,6 +56,10 @@ int32_t MODEMNG_ClosePlayBackMode(void)
 
     s32Ret = MEDIA_DISP_Pause();
     MODEMNG_CHECK_RET(s32Ret,MODE_EINVAL,"DISP pause");
+
+    /* Clear playback's last shown frame before switching back to preview. */
+    s32Ret = MEDIA_DISP_ClearBuf();
+    MODEMNG_CHECK_RET(s32Ret, MODE_EINVAL, "DISP clear");
 
     pstModeMngCtx->CurWorkMode = WORK_MODE_BUTT;
     pstModeMngCtx->u32ModeState = MEDIA_MOVIE_STATE_BUTT;

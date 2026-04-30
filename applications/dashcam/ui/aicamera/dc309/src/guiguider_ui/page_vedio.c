@@ -34,6 +34,21 @@ extern const char *effect_style_small[];//特效图片数组
 
 extern uint8_t is_start_video;     //录像状态
 extern bool is_video_mode;
+
+/*
+ * 与 EVENT_MODEMNG_RECODER_STARTSTATU 对齐后用 lv_tick 算已录秒数，
+ * 避免“定时器里先显示再自增”的相位误差。
+ * 注意：不要用“显示秒数减常数”去贴 ffprobe，否则前几秒会一直卡在 00:00:00。
+ */
+static uint32_t s_vedio_rec_sync_tick;
+static uint8_t s_vedio_rec_time_synced;
+
+static uint32_t page_vedio_rec_elapsed_sec_for_display(void)
+{
+    if (!s_vedio_rec_time_synced)
+        return 0;
+    return lv_tick_elaps(s_vedio_rec_sync_tick) / 1000;
+}
 extern char *batter_image_big[];
 extern char *red_light_image_level[];
 extern int32_t g_batter_image_index;
@@ -65,14 +80,37 @@ static bool is_in_video_page(void)
             lv_screen_active() == obj_vedio_s);
 }
 
+void page_vedio_on_recorder_started(int32_t rec_id)
+{
+    if (rec_id != 0)
+        return;
+    if (is_start_video != VEDIO_START)
+        return;
+    /* 仅本段录像第一次 START 时清零；循环录像新文件若再报 START 不能重置 OSD */
+    if (s_vedio_rec_time_synced)
+        return;
+    s_vedio_rec_time_synced = 1;
+    s_vedio_rec_sync_tick = lv_tick_get();
+    /* 1s 周期定时器可能与 START 错开半周期，立刻跑一次刷新 */
+    if (date_timer_s != NULL)
+        lv_timer_ready(date_timer_s);
+}
+
+void page_vedio_on_recorder_stopped(int32_t rec_id)
+{
+    if (rec_id != 0)
+        return;
+    s_vedio_rec_time_synced = 0;
+}
+
 // 视频分辨率选择回调
 static void icon_select_video_res_callback(uint32_t index, void *user_data)
 {
     MLOG_DBG("视频分辨率选择: index=%d\n", index);
-    
+
     // 设置新的分辨率索引
     video_setRes_Index(index);
-    
+
     // 更新UI显示
     if (g_video_top_controls[1] && lv_obj_is_valid(g_video_top_controls[1])) {
         const char *icon = video_getRes_Icon();
@@ -80,7 +118,7 @@ static void icon_select_video_res_callback(uint32_t index, void *user_data)
             show_image(g_video_top_controls[1], icon);
         }
     }
-    
+
     // 发送消息更新分辨率参数
     MESSAGE_S Msg = {0};
     Msg.topic = EVENT_MODEMNG_SETTING;
@@ -96,29 +134,29 @@ static void video_res_btn_click_cb(lv_event_t *e)
         MLOG_DBG("不在视频页面，忽略点击\n");
         return;
     }
-    
+
     // 如果弹窗已存在且是同一类型，则关闭
     if (is_icon_select_popup_exists()) {
         delete_icon_select_popup();
         return;
     }
-    
+
     // 构建分辨率选项数组
     PARAM_MENU_S menu_param = {0};
     PARAM_GetMenuParam(&menu_param);
-    
+
     static icon_select_item_t video_res_items[6];
     static char video_res_labels[6][16];
     uint8_t item_count = menu_param.VideoSize.ItemCnt;
     if (item_count > 6) item_count = 6;
-    
+
     for (uint8_t i = 0; i < item_count; i++) {
         video_res_items[i].icon = video_getRes_IconByIndex(i);
         snprintf(video_res_labels[i], sizeof(video_res_labels[i]), "%s",
                  menu_param.VideoSize.Items[i].Desc);
         video_res_items[i].label = video_res_labels[i];
     }
-    
+
     // 创建弹窗
     create_icon_select_popup(obj_vedio_s, ICON_SELECT_VIDEO_RESOLUTION,
                               video_res_items, item_count,
@@ -178,29 +216,29 @@ static void video_redlight_btn_click_cb(lv_event_t *e)
         MLOG_DBG("不在视频页面，忽略点击\n");
         return;
     }
-    
+
     // 如果弹窗已存在且是同一类型，则关闭
     if (is_icon_select_popup_exists()) {
         delete_icon_select_popup();
         return;
     }
-    
+
     // 根据电池电量获取最大允许的档位
     int8_t max_level = get_max_red_light_level();
-    
+
     // 构建红外灯亮度选项数组（0=关闭，1-max_level=亮度档位）
     // 选项数量 = 1（关闭选项）+ max_level（允许的最大档位）
     int item_count = 1 + max_level;
     if (item_count > 8) item_count = 8;  // 最多8个选项
-    
+
     static icon_select_item_t redlight_items[8];
     static char redlight_labels[8][16];
-    
+
     // 第一个选项是关闭
     redlight_items[0].icon = "guanbi.png";
     snprintf(redlight_labels[0], sizeof(redlight_labels[0]), "关闭");
     redlight_items[0].label = redlight_labels[0];
-    
+
     // 后续选项是亮度档位
     for (int i = 1; i < item_count; i++) {
         int level_index = i - 1;  // 对应 red_light_image_level 数组索引
@@ -212,7 +250,7 @@ static void video_redlight_btn_click_cb(lv_event_t *e)
         snprintf(redlight_labels[i], sizeof(redlight_labels[i]), "等级%d", i);
         redlight_items[i].label = redlight_labels[i];
     }
-    
+
     // 计算当前选中的索引（根据当前亮度级别和最大档位限制）
     uint32_t selected_index = 0;
     if (brightness_level > 0) {
@@ -222,14 +260,14 @@ static void video_redlight_btn_click_cb(lv_event_t *e)
             selected_index = brightness_level;
         }
     }
-    
+
     // 创建弹窗
     create_icon_select_popup(obj_vedio_s, ICON_SELECT_REDLIGHT,
                               redlight_items, item_count,
                               selected_index,
                               icon_select_video_redlight_callback, NULL);
-    
-    MLOG_DBG("录像模式红外灯弹窗：最大档位=%d，选项数量=%d，当前选中=%d\n", 
+
+    MLOG_DBG("录像模式红外灯弹窗：最大档位=%d，选项数量=%d，当前选中=%d\n",
              max_level, item_count, selected_index);
 }
 
@@ -263,24 +301,24 @@ static void video_brightness_btn_click_cb(lv_event_t *e)
         MLOG_DBG("不在视频页面，忽略点击\n");
         return;
     }
-    
+
     // 如果弹窗已存在且是同一类型，则关闭
     if (is_icon_select_popup_exists()) {
         delete_icon_select_popup();
         return;
     }
-    
+
     // 构建屏幕亮度选项数组
     static icon_select_item_t brightness_items[7];
     static char brightness_labels[7][8];
     char* brightness_buf[] = { "1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png" };
-    
+
     for (uint8_t i = 0; i < 7; i++) {
         brightness_items[i].icon = brightness_buf[i];
         snprintf(brightness_labels[i], sizeof(brightness_labels[i]), "等级%d", i + 1);
         brightness_items[i].label = brightness_labels[i];
     }
-    
+
     // 创建弹窗
     create_icon_select_popup(obj_vedio_s, ICON_SELECT_BRIGHTNESS,
                               brightness_items, 7,
@@ -322,7 +360,6 @@ static void video_var_dynamic_update(lv_timer_t *timer)
     // lv_ui_t *ui  = (lv_ui_t *)lv_timer_get_user_data(timer);
     time_t now   = time(NULL);
     struct tm *t = localtime(&now);
-    static uint32_t total_seconds = 0;
     // MLOG_DBG("%s[%d]   %d...\n",__func__,__LINE__,lv_obj_is_valid(obj_vedio_s));
     {
         // 检查对象有效性，避免在页面切换时访问已销毁的对象
@@ -361,7 +398,6 @@ static void video_var_dynamic_update(lv_timer_t *timer)
                 {
                     lv_obj_add_flag(dot_red_s, LV_OBJ_FLAG_HIDDEN);
                 }
-                total_seconds = 0;
             }  ;break;
             case VEDIO_START:
             {
@@ -373,13 +409,21 @@ static void video_var_dynamic_update(lv_timer_t *timer)
                 {
                     lv_obj_remove_flag(dot_red_s, LV_OBJ_FLAG_HIDDEN);
                 }
-                uint8_t hour = (total_seconds / 3600);
-                uint8_t min = (total_seconds%3600)/60;
-                uint8_t sec = total_seconds%60;
-                total_seconds++;
-
-                lv_label_set_text_fmt(label_Vedio_Durtime_s, "%02d:%02d:%02d",hour, min, sec);
-                lv_obj_set_style_text_color(label_Vedio_Durtime_s, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+                if (!s_vedio_rec_time_synced) {
+                    lv_label_set_text_fmt(label_Vedio_Durtime_s, "%02d:%02d:%02d", 0, 0, 0);
+                    lv_obj_set_style_text_color(label_Vedio_Durtime_s, lv_color_hex(0xFF0000),
+                                                LV_PART_MAIN | LV_STATE_DEFAULT);
+                    break;
+                }
+                {
+                    uint32_t es = page_vedio_rec_elapsed_sec_for_display();
+                    uint8_t hour = (uint8_t)(es / 3600);
+                    uint8_t min = (uint8_t)((es % 3600) / 60);
+                    uint8_t sec = (uint8_t)(es % 60);
+                    lv_label_set_text_fmt(label_Vedio_Durtime_s, "%02d:%02d:%02d", hour, min, sec);
+                    lv_obj_set_style_text_color(label_Vedio_Durtime_s, lv_color_hex(0xFF0000),
+                                                LV_PART_MAIN | LV_STATE_DEFAULT);
+                }
 
             };break;
         }
@@ -390,19 +434,19 @@ static void video_var_dynamic_update(lv_timer_t *timer)
 void update_video_top_controls_layout(void)
 {
     int x_pos = 6;  // 起始X坐标
-    
+
     // 1. 录像模式按钮 (74x47)
     if (g_video_top_controls[0] && lv_obj_is_valid(g_video_top_controls[0])) {
         lv_obj_set_pos(g_video_top_controls[0], x_pos, 0);
     }
     x_pos += 76 + 10;
-    
+
     // 2. 分辨率按钮 (38x32)
     if (g_video_top_controls[1] && lv_obj_is_valid(g_video_top_controls[1])) {
         lv_obj_set_pos(g_video_top_controls[1], x_pos, 4);
     }
     x_pos += 40 + 10;
-    
+
     // 3. 红光亮级按钮 (38x32)
     if (g_video_top_controls[2] && lv_obj_is_valid(g_video_top_controls[2])) {
         if (brightness_level > 0) {
@@ -413,13 +457,13 @@ void update_video_top_controls_layout(void)
             lv_obj_add_flag(g_video_top_controls[2], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    
+
     // // 4. ISO级别按钮
     // if (g_video_top_controls[3] && lv_obj_is_valid(g_video_top_controls[3])) {
     //     lv_obj_set_pos(g_video_top_controls[3], x_pos, 4);
     // }
     // x_pos += 40 + 10;
-    
+
     // 5. 屏幕亮度按钮
     if (g_video_top_controls[4] && lv_obj_is_valid(g_video_top_controls[4])) {
         lv_obj_set_pos(g_video_top_controls[4], x_pos, 4);
@@ -734,7 +778,7 @@ void Home_Vedio(lv_ui_t *ui)
     g_video_top_controls[2] = lv_imagebutton_create(obj_vedio_s);
     lv_obj_set_size(g_video_top_controls[2], 40, 40);
     lv_obj_add_event_cb(g_video_top_controls[2], video_redlight_btn_click_cb, LV_EVENT_CLICKED, NULL);  // 添加点击事件
-    
+
     // // ISO级别按钮
     // g_video_top_controls[3] = lv_imagebutton_create(obj_vedio_s);
     // lv_obj_set_size(g_video_top_controls[3], 38, 32);
@@ -766,7 +810,7 @@ void Home_Vedio(lv_ui_t *ui)
     } else if (brightness_level > 0) {
         show_image(g_video_top_controls[2], red_light_image_level[brightness_level-1]);
     }
-    
+
     // 初始布局更新
     update_video_top_controls_layout();
 
@@ -830,7 +874,7 @@ void Home_Vedio(lv_ui_t *ui)
     lv_obj_set_style_shadow_width(img_menu, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(img_menu, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_add_event_cb(img_menu, buttonVedio_All_event_handler, LV_EVENT_CLICKED, (void *)(intptr_t)1);
-    
+
     // 滤镜
     lv_obj_t *btn_effect = lv_button_create(obj_vedio_s);
     lv_obj_align(btn_effect, LV_ALIGN_BOTTOM_LEFT, 60,0);
@@ -877,7 +921,7 @@ void Home_Vedio(lv_ui_t *ui)
     lv_obj_set_style_shadow_width(img_exit, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(img_exit, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_add_event_cb(img_exit, buttonVedio_All_event_handler, LV_EVENT_CLICKED, (void *)(intptr_t)3);
-    
+
     //创建缩放UI
     create_zoom_bar(obj_vedio_s);
 
@@ -978,11 +1022,11 @@ static void zoom_longpress_timer_cb(lv_timer_t *timer)
         g_zoom_longpress_timer = NULL;
         return;
     }
-    
+
     uint32_t new_level = get_zoom_level();
     MESSAGE_S Msg = {0};
     bool can_continue = false;
-    
+
     switch (g_zoom_longpress_dir) {
         case 1: // 缩小
             if (new_level > 1) {
@@ -990,7 +1034,7 @@ static void zoom_longpress_timer_cb(lv_timer_t *timer)
                 can_continue = true;
             }
             break;
-            
+
         case 2: // 放大
             if (new_level < ZOOM_RADIO_MAX) {
                 new_level++;
@@ -998,17 +1042,17 @@ static void zoom_longpress_timer_cb(lv_timer_t *timer)
             }
             break;
     }
-    
+
     if (can_continue) {
         set_zoom_level(new_level);
         new_level = get_zoom_level();
-        
+
         Msg.topic = EVENT_MODEMNG_LIVEVIEW_ADJUSTFOCUS;
         Msg.arg1 = 0;
         snprintf((char*)Msg.aszPayload, 3, "%d", new_level);
         MODEMNG_SendMessage(&Msg);
         update_zoom_bar(new_level);
-        
+
         MLOG_DBG("长按缩放: 方向=%d, 等级=%d\n", g_zoom_longpress_dir, new_level);
     } else {
         // 达到边界，停止长按
@@ -1023,7 +1067,7 @@ static void photo_zoom_event_cb(lv_event_t* e)
     lv_event_code_t code = lv_event_get_code(e);
     int click_index = (int)lv_event_get_user_data(e);
     static uint32_t last_click_time = 0;
-    
+
     if (obj_vedio_s == NULL || !lv_obj_is_valid(obj_vedio_s)) {
         g_zoom_longpress_active = false;
         if (g_zoom_longpress_timer != NULL) {
@@ -1039,7 +1083,7 @@ static void photo_zoom_event_cb(lv_event_t* e)
             uint32_t new_level = get_zoom_level();
             MESSAGE_S msg = {0};
             // bool zoom_performed = false;
-            
+
             if (click_index == 1 && new_level > 1) { // 缩小
                 new_level--;
                 // zoom_performed = true;
@@ -1047,23 +1091,23 @@ static void photo_zoom_event_cb(lv_event_t* e)
                 new_level++;
                 // zoom_performed = true;
             }
-            
+
             // if (zoom_performed) {
                 set_zoom_level(new_level);
                 new_level = get_zoom_level();
-                
+
                 msg.topic = EVENT_MODEMNG_LIVEVIEW_ADJUSTFOCUS;
                 msg.arg1 = 0;
                 snprintf((char*)msg.aszPayload, 3, "%d", new_level);
                 MODEMNG_SendMessage(&msg);
                 update_zoom_bar(new_level);
-                
+
                 MLOG_DBG("缩放按钮按下: 方向=%d, 新等级=%d\n", click_index, new_level);
             // }
-            
+
             // 记录按下时间
             last_click_time = lv_tick_get();
-            
+
             // 启动长按定时器
             g_zoom_longpress_dir = click_index;
             g_zoom_longpress_active = true;
@@ -1072,7 +1116,7 @@ static void photo_zoom_event_cb(lv_event_t* e)
             }
             break;
         }
-        
+
         case LV_EVENT_RELEASED: {
             // 停止长按
             g_zoom_longpress_active = false;
@@ -1080,10 +1124,10 @@ static void photo_zoom_event_cb(lv_event_t* e)
                 lv_timer_del(g_zoom_longpress_timer);
                 g_zoom_longpress_timer = NULL;
             }
-            
+
             // 计算按下时间
             uint32_t press_duration = lv_tick_get() - last_click_time;
-            
+
             // 如果是短按（小于300ms），不执行额外操作
             if (press_duration < 300) {
                 MLOG_DBG("短按释放: 持续时间=%dms\n", press_duration);

@@ -234,8 +234,10 @@ int32_t ui_common_eventcb(void* argv, EVENT_S* msg)
     case EVENT_MODEMNG_SMILE_START_PIV:
         break;
     case EVENT_MODEMNG_RECODER_STARTSTATU:
+        page_vedio_on_recorder_started((int32_t)msg->arg1);
         break;
     case EVENT_MODEMNG_RECODER_STOPSTATU:
+        page_vedio_on_recorder_stopped((int32_t)msg->arg1);
         break;
     case EVENT_MODEMNG_RECODER_SPLITREC:
         break;

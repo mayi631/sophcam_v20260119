@@ -21,6 +21,63 @@ static int32_t rs_get_rec_id(RECORD_SERVICE_HANDLE_T rs)
     return MAX_CONTEXT_CNT;
 }
 
+/* MAPI framerate: integer fps, or (denom<<16)|num for fractional. */
+static float rs_framerate_to_fps(uint32_t fr)
+{
+    if (fr == 0)
+        return 0.f;
+    if ((fr & 0xffff0000u) == 0)
+        return (float)fr;
+    uint32_t num = fr & 0xffffu;
+    uint32_t denom = fr >> 16;
+    if (denom == 0)
+        return (float)fr;
+    return (float)num / (float)denom;
+}
+
+/*
+ * MOV/MP4 timeline is sensitive to track fps metadata.
+ * If configured mode fps (e.g. 60) drifts from actual encoder dst fps under load/drop,
+ * file duration can become shorter than wall-clock OSD. Override with live VENC attrs.
+ */
+static void rs_overlay_video_track_fps_from_venc(RECORD_SERVICE_PARAM_S *aattr, REC_ATTR_T *rattr)
+{
+    if (rattr->enRecType != RECORDER_TYPE_NORMAL)
+        return;
+
+    if (aattr->rec_venc_hdl != NULL) {
+        MAPI_VENC_CHN_ATTR_T va = {0};
+        if (MAPI_VENC_GetAttr(aattr->rec_venc_hdl, &va) == 0) {
+            float fps = rs_framerate_to_fps(va.venc_param.dst_framerate);
+            if (fps >= 1.f) {
+                RECORDER_TRACK_SOURCE_S *vh =
+                    &rattr->astStreamAttr[0].aHTrackSrcHandle[RECORDER_TRACK_SOURCE_TYPE_VIDEO];
+                CVI_LOGI("mux main video: VENC dst fps=%.3f (param %.3f)", fps, aattr->framerate);
+                vh->unTrackSourceAttr.stVideoInfo.fFrameRate = fps;
+                vh->unTrackSourceAttr.stVideoInfo.fSpeed = fps;
+                if (va.venc_param.gop > 0)
+                    vh->unTrackSourceAttr.stVideoInfo.u32Gop = (uint32_t)va.venc_param.gop;
+            }
+        }
+    }
+
+    if (aattr->enable_subvideo && aattr->sub_rec_venc_hdl != NULL) {
+        MAPI_VENC_CHN_ATTR_T sva = {0};
+        if (MAPI_VENC_GetAttr(aattr->sub_rec_venc_hdl, &sva) == 0) {
+            float sfps = rs_framerate_to_fps(sva.venc_param.dst_framerate);
+            if (sfps >= 1.f) {
+                RECORDER_TRACK_SOURCE_S *sh =
+                    &rattr->astStreamAttr[0].aHTrackSrcHandle[CVI_RECORDER_TRACK_SOURCE_TYPE_SUB_VIDEO];
+                CVI_LOGI("mux sub video: VENC dst fps=%.3f (param %.3f)", sfps, aattr->sub_framerate);
+                sh->unTrackSourceAttr.stVideoInfo.fFrameRate = sfps;
+                sh->unTrackSourceAttr.stVideoInfo.fSpeed = sfps;
+                if (sva.venc_param.gop > 0)
+                    sh->unTrackSourceAttr.stVideoInfo.u32Gop = (uint32_t)sva.venc_param.gop;
+            }
+        }
+    }
+}
+
 static void APPATTR_2_RECORDATTR(RECORD_SERVICE_PARAM_S *aattr, REC_ATTR_T *rattr)
 {
     CVI_LOGD("rec_mode = %d", aattr->rec_mode);
@@ -128,6 +185,7 @@ static void APPATTR_2_RECORDATTR(RECORD_SERVICE_PARAM_S *aattr, REC_ATTR_T *ratt
     rattr->handles.vproc_chn_id_venc = aattr->vproc_chn_id_venc;
     rattr->handles.venc_bind_mode = aattr->venc_bind_mode;
     rattr->handles.venc_rec_start = 0;
+    rs_overlay_video_track_fps_from_venc(aattr, rattr);
 
     rattr->stCallback.pfnRequestFileNames = aattr->generate_filename_cb;
     rattr->stCallback.pfnNormalRecCb = aattr->cont_recorder_event_cb;

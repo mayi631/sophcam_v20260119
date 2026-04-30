@@ -89,6 +89,43 @@ static thumbnail_buf_t g_snap_buf[MAX_CONTEXT_CNT];
 #endif
 static rs_context_t gstRecMasterCtx[MAX_CONTEXT_CNT];
 
+static bool rs_thumbnail_chn_can_be_toggled(REC_ATTR_T *p)
+{
+	if (p == NULL || p->handles.thumbnail_vproc == NULL) {
+		return false;
+	}
+	/* Safety: never toggle the active recording channel by mistake. */
+	return p->handles.vproc_chn_id_thumbnail != p->handles.vproc_chn_id_venc;
+}
+
+static uint32_t rs_rec_main_video_width(const REC_ATTR_T *p)
+{
+	const RECORDER_TRACK_SOURCE_S *vid;
+
+	if (p == NULL) {
+		return 0;
+	}
+	vid = &p->astStreamAttr[0].aHTrackSrcHandle[RECORDER_TRACK_SOURCE_TYPE_VIDEO];
+	if (!vid->enable) {
+		return 0;
+	}
+	return vid->unTrackSourceAttr.stVideoInfo.u32Width;
+}
+
+/* VPSS needs several frames after channel enable before output is stable (especially 4K). */
+static uint32_t rs_thumb_settle_delay_us(const REC_ATTR_T *p)
+{
+	uint32_t w = rs_rec_main_video_width(p);
+
+	if (w >= 3840) {
+		return 200 * 1000;
+	}
+	if (w >= 1920) {
+		return 100 * 1000;
+	}
+	return 50 * 1000;
+}
+
 static int32_t rs_get_venc_stream(MAPI_VENC_HANDLE_T vhdl, VENC_STREAM_S *stream)
 {
 	int32_t ret = MAPI_VENC_GetStreamTimeWait(vhdl, stream, 1000);
@@ -628,6 +665,7 @@ static void rs_thumb_task_entry(void *arg)
 	uint32_t *thmbsize = 0;
 	uint32_t bufsize = 0;
 	int32_t thumbnail_flag = 0;
+	bool thumb_chn_enabled = false;
 	while (!rs->shutdown) {
 		if (p->enable_thumbnail == false || rs->need_thumbnail == 0) {
 			OSAL_TASK_Sleep(10 * 1000);
@@ -650,9 +688,48 @@ static void rs_thumb_task_entry(void *arg)
 		}
 		*thmbsize = 0;
 
+		if (rs_thumbnail_chn_can_be_toggled(p)) {
+			if (MAPI_VPROC_EnableChn(p->handles.thumbnail_vproc, p->handles.vproc_chn_id_thumbnail) == 0) {
+				thumb_chn_enabled = true;
+				OSAL_TASK_Sleep(rs_thumb_settle_delay_us(p));
+			} else {
+				CVI_LOGE("RS[%d]: MAPI_VPROC_EnableChn(thumbnail) failed", rs->id);
+				goto END1;
+			}
+		}
+
 		MAPI_VENC_StartRecvFrame(p->handles.thumbnail_venc_hdl, -1);
 
-		int32_t ret = MAPI_VPROC_GetChnFrame(p->handles.thumbnail_vproc, p->handles.vproc_chn_id_thumbnail, &frame);
+		/* Drop a few frames: first outputs after enable often mismatch 4K pipeline timing. */
+		if (thumb_chn_enabled) {
+			int32_t warmup_frames = rs_rec_main_video_width(p) >= 3840 ? 3 : 2;
+
+			for (int32_t w = 0; w < warmup_frames; w++) {
+				int32_t wret = -1;
+
+				for (int32_t attempt = 0; attempt < 8; attempt++) {
+					wret = MAPI_VPROC_GetChnFrame(p->handles.thumbnail_vproc, p->handles.vproc_chn_id_thumbnail,
+								      &frame);
+					if (wret == 0) {
+						break;
+					}
+					OSAL_TASK_Sleep(20 * 1000);
+				}
+				if (wret == 0) {
+					LOG_RET(MAPI_ReleaseFrame(&frame));
+				}
+			}
+		}
+
+		int32_t ret = -1;
+
+		for (int32_t attempt = 0; attempt < 8; attempt++) {
+			ret = MAPI_VPROC_GetChnFrame(p->handles.thumbnail_vproc, p->handles.vproc_chn_id_thumbnail, &frame);
+			if (ret == 0) {
+				break;
+			}
+			OSAL_TASK_Sleep(20 * 1000);
+		}
 		if (ret != 0) {
 			CVI_LOGE("RS[%d]: MAPI_VPROC_GetChnFrame failed", rs->id);
 			goto END1;
@@ -664,9 +741,14 @@ static void rs_thumb_task_entry(void *arg)
 			goto END;
 		}
 
-		ret = MAPI_VENC_GetStream(p->handles.thumbnail_venc_hdl, &stream);
+		ret = MAPI_VENC_GetStreamTimeWait(p->handles.thumbnail_venc_hdl, &stream, 3000);
 		if (ret != 0) {
-			CVI_LOGE("RS[%d]: MAPI_VENC_GetStream failed", rs->id);
+			CVI_LOGE("RS[%d]: MAPI_VENC_GetStreamTimeWait failed", rs->id);
+			goto END;
+		}
+		if (stream.u32PackCount <= 0 || stream.u32PackCount > FRAME_STREAM_SEGMENT_MAX_NUM) {
+			CVI_LOGE("RS[%d]: thumbnail stream pack count %u invalid", rs->id, stream.u32PackCount);
+			LOG_RET(MAPI_VENC_ReleaseStream(p->handles.thumbnail_venc_hdl, &stream));
 			goto END;
 		}
 
@@ -683,6 +765,10 @@ static void rs_thumb_task_entry(void *arg)
 		LOG_RET(MAPI_ReleaseFrame(&frame));
 	END1:
 		MAPI_VENC_StopRecvFrame(p->handles.thumbnail_venc_hdl);
+		if (thumb_chn_enabled) {
+			LOG_RET(MAPI_VPROC_DisableChn(p->handles.thumbnail_vproc, p->handles.vproc_chn_id_thumbnail));
+			thumb_chn_enabled = false;
+		}
 		if (thumbnail_flag == 0) {
 			rs->need_thumbnail &= (~0x1);
 		} else if (thumbnail_flag == 1) {
@@ -1920,6 +2006,12 @@ void *master_create(int32_t id, REC_ATTR_T *attr)
 	pthread_mutex_init(&handle->rec_mutex, NULL);
 	handle->cur_state = RS_STATE_IDLE;
 	handle->piv_prealloclen = attr->s32SnapPresize;
+
+	if (attr->enable_thumbnail && rs_thumbnail_chn_can_be_toggled(attr)) {
+		if (MAPI_VPROC_DisableChn(attr->handles.thumbnail_vproc, attr->handles.vproc_chn_id_thumbnail) != 0) {
+			CVI_LOGW("RS[%d]: initial disable thumbnail chn failed", id);
+		}
+	}
 
 	master_start_task(handle);
 

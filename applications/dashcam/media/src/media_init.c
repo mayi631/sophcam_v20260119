@@ -638,6 +638,13 @@ static int32_t MEDIA_VprocInit(void)
 		PARAM_MEDIA_SPEC_S params;
 		PARAM_MEDIA_VPROC_GRP_ATTR_S *pGrpAttr = NULL;
 		PARAM_GetMediaMode(i, &params);
+
+		/* Update VI fps during vproc/vpss re-init without rebuilding VI. */
+		float fps = params.VcapAttr.VcapChnAttr.f32Fps;
+		s32Ret = MAPI_VCAP_SetAttrEx(Syshdl->sns[i], MAPI_VCAP_CMD_Fps, (void *)&fps, sizeof(float));
+		MEDIA_CHECK_RET(s32Ret, APP_MEDIA_EINVAL, "MAPI_VCAP_SetAttrEx fps fail");
+		CVI_LOGI("apply cam%u vi fps=%f", i, fps);
+
 		for (uint32_t j = 0; j < params.VprocAttr.VprocCnt; j++) {
 			pGrpAttr = &params.VprocAttr.VprocGrpAttr[j];
 			if (pGrpAttr->VprocEnable == false) {

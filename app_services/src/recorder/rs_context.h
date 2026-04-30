@@ -118,6 +118,10 @@ typedef struct __rs_context {
 	uint64_t venc_rec_stream_count;
 
 	int32_t stop_flag;
+
+	/* Keep per-track PTS monotonic when using wallclock-based muxing. */
+	uint64_t last_pts_video_us;
+	uint64_t last_pts_sub_video_us;
 } rs_context_t, *rs_context_handle_t;
 
 #define RS_STATE_UP(rs, name) \
