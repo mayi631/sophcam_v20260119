@@ -37,7 +37,7 @@ static const res_to_icon_t photo_Res_Icons[] = {
     // {.w = 4000, .h = 3000, .icon_c = "12M.png"},
     {.w = 3840, .h = 2160, .icon_c = "8M.png"},
     {.w = 2688, .h = 1512, .icon_c = "4M.png"},
-    {.w = 2688, .h = 1512, .icon_c = "2M.png"},
+    {.w = 1920, .h = 1080, .icon_c = "2M.png"},
     // {.w = 1920, .h = 1080, .icon_c = "2m.png"},
     // {.w = 640, .h = 480, .icon_c = "vga2.png"},
 };

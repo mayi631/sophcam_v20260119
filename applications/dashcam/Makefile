@@ -128,6 +128,18 @@ INCS	+= -I$(AI_SDK_DIR)/include
 LIBS	+= -L$(AI_SDK_DIR)/lib
 LIBS	+=  -Wl,--start-group -limage_recognize -lface_beautifier -limg2img -lwebsockets -lvoice_chat -ltext_to_speech -lspeech_to_text -lcurl -lcrypto -lssl -Wl,--end-group
 
+# KT_ANI_SDK libraries - stored separately, will be added to sophcam only
+ifeq ($(CONFIG_COMPONENTS_KT_ANI_SDK), y)
+INCS	+= -I$(KT_ANI_SDK_DIR)/include
+KT_ANI_LIBS	:= -L$(KT_ANI_SDK_DIR)/lib
+ifeq ($(CONFIG_STATIC), y)
+# KT_ANI_SDK only provides shared libraries, force dynamic linking
+KT_ANI_LIBS	+= -Wl,-Bdynamic -lkt_animal -lmodel_combine -lbmrt -lbmlib -Wl,-Bstatic
+else
+KT_ANI_LIBS	+= -lkt_animal -lmodel_combine -lbmrt -lbmlib
+endif
+endif
+
 ifneq ($(CONFIG_STATIC), y)
 ifeq ($(CONFIG_ENABLE_ISP_PQ_TOOL), y)
 LIBS		+= -L$(MMF_DIR)/lib -lcvi_ispd2
@@ -222,6 +234,9 @@ SRCS_C := $(filter-out $(exclude_src), $(SRCS_TEMP))
 
 CFLAGS += $(KBUILD_DEFINES)
 CXXFLAGS += $(KBUILD_DEFINES)
+
+# Add KT_ANI_SDK libraries only for sophcam target
+LIBS += $(KT_ANI_LIBS)
 
 include $(COMMON_DIR)/common_lib.mk
 

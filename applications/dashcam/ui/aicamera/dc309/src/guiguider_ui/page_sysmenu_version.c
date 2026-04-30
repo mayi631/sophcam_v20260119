@@ -12,7 +12,7 @@
 #include "style_common.h"
 #include <stdio.h>
 #include <string.h>
-
+#include <stdlib.h>
 // 页面全局变量
 lv_obj_t *obj_sysMenu_version_s = NULL;
 static lv_obj_t *cont_top              = NULL;
@@ -239,8 +239,57 @@ lv_obj_t *get_obj_sysMenu_version_seen(void)
 
 static void sysmenu_version_menu_callback(int key_code, int key_value)
 {
+    static uint32_t first_press_time = 0; // 第一次按键时间
+    static uint32_t last_press_time = 0; // 上次按键时间
+    static uint8_t press_count = 0; // 连续按键计数
+
     if (key_code == KEY_MENU && key_value == 1) {
         ui_load_scr_animation(&g_ui, &obj_sysMenu_Setting_s, 1, NULL, sysMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0,
             false, true);
+    }
+    else if (key_code == KEY_DOWN && key_value == 1) {
+        uint32_t current_time = lv_tick_get();
+
+        // 如果是第一次按下，记录起始时间
+        if (press_count == 0) {
+            first_press_time = current_time;
+            last_press_time = current_time;
+            press_count = 1;
+            MLOG_DBG("开始计数，当前第1次\n");
+        } else {
+            // 检查总时间是否超过3秒
+            if (current_time - first_press_time > 3000) {
+                // 超过3秒，重新开始计数
+                press_count = 1;
+                first_press_time = current_time;
+                last_press_time = current_time;
+                MLOG_DBG("总时间超过3秒，重新开始计数，当前第1次\n");
+            }
+            // 检查相邻按键间隔是否超过500ms（更严格的间隔）
+            else if (current_time - last_press_time > 500) {
+                // 相邻按键间隔超过500ms，重新开始计数
+                press_count = 1;
+                first_press_time = current_time;
+                last_press_time = current_time;
+                MLOG_DBG("按键间隔超过500ms，重新开始计数，当前第1次\n");
+            } else {
+                // 符合条件，计数增加
+                press_count++;
+                last_press_time = current_time;
+                MLOG_DBG("音量下键连续按下 %d 次，总时间: %dms，上次间隔: %dms\n",
+                    press_count, current_time - first_press_time, current_time - last_press_time);
+            }
+        }
+
+        // 检查是否达到5次
+        if (press_count >= 5) {
+            MLOG_DBG("3秒内连续按下5次 W 按键，开启ADB调试\n");
+            system("/etc/init.d/P10adbd restart");
+
+            // 重置计数器
+            press_count = 0;
+            first_press_time = 0;
+            last_press_time = 0;
+        }
     }
 }
