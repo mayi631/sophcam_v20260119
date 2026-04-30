@@ -33,7 +33,7 @@ static const res_to_icon_t video_Res_Icons[] = {
     {.w = 2688, .h = 1520, .icon_c = "2.7K30FPS.png"},
     {.w = 1920, .h = 1080, .icon_c = "FHD60FPS.png"},//有两个FHD，一个60fps，一个35fps
     {.w = 1920, .h = 1080, .icon_c = "FHD30FPS.png"},
-    // {.w = 1280, .h = 720, .icon_c = "HD.png"},
+    {.w = 1920, .h = 1080, .icon_c = "FHD30FPS N.png"},
     // {.w = 640, .h = 480, .icon_c = "VGA.png"},
 };
 
