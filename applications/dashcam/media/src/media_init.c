@@ -212,15 +212,33 @@ static void extract_fps(const char *full_str, char *desc_buf, size_t buf_size)
         return;
     }
 
-    const char *space_pos = strchr(full_str, '@');
-    if (space_pos != NULL) {
-        /* 找到第一个@，跳过它，后面的就是显示名 */
-        strncpy(desc_buf, space_pos + 1, buf_size - 1);
-        desc_buf[buf_size - 1] = '\0';
+    /* 通过'F'字符分割，取最后一个'F'之前的部分作为帧率数字
+     * 例如: "4K30FPS" -> "30", "FHD60FPS" -> "60", "FHD30FPS N" -> "30" */
+    const char *last_f = NULL;
+    const char *p = full_str;
+    while ((p = strchr(p, 'F')) != NULL) {
+        last_f = p;
+        p++;
+    }
+
+    if (last_f != NULL) {
+        /* 回溯找到'F'前面的数字部分 */
+        const char *end = last_f;
+        const char *start = end;
+        while (start > full_str && *(start - 1) >= '0' && *(start - 1) <= '9') {
+            start--;
+        }
+        if (start < end) {
+            size_t len = end - start;
+            if (len >= buf_size)
+                len = buf_size - 1;
+            strncpy(desc_buf, start, len);
+            desc_buf[len] = '\0';
+        } else {
+            desc_buf[0] = '\0';
+        }
     } else {
-        /* 没有@，整个字符串就是显示名*/
-        strncpy(desc_buf, full_str, buf_size - 1);
-        desc_buf[buf_size - 1] = '\0';
+        desc_buf[0] = '\0';
     }
 }
 
@@ -250,7 +268,7 @@ int32_t MEDIA_Size2VideoMediaMode(int32_t width, int32_t height,char *str)
 
 	/* Crop-2M (new sensor); keep legacy "1080P_NEW" strings working. */
 	if (str != NULL && width == 1920 &&
-	    (strstr(str, "Crop-2M") != NULL || strstr(str, "1080p_new") != NULL)) {
+	    (strstr(str, "FHD30FPS N") != NULL)) {
 		return MEDIA_VIDEO_SIZE_1920X1080_NEW;
 	}
 

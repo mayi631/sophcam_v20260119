@@ -28,7 +28,7 @@ ifeq ($(strip $(SOPHCAM_COMMIT_ID)),)
 SOPHCAM_COMMIT_ID := NULL
 endif
 
-export SRCTREE OUTPUT INSTALL_PATH TOP_CONFIG_FILE NPROC CROSS_COMPILE COMMON_DIR SOPHCAM_COMMIT_ID
+export SRCTREE OUTPUT INSTALL_PATH TOP_CONFIG_FILE NPROC CROSS_COMPILE COMMON_DIR SOPHCAM_COMMIT_ID KT_ANI_SDK_DIR
 
 # `make menuconfig`：图形化配置应用选项
 # `make xxx_defconfig`：使用预设的配置文件
@@ -108,6 +108,12 @@ endif
 	rm -rf $(INSTALL_PATH)/bin/model
 	mkdir -p $(INSTALL_PATH)/bin/model
 	cp -rfL $(SRCTREE)/applications/dashcam/resource/model/$(INI_PDT)/* $(INSTALL_PATH)/bin/model
+
+	rm -rf $(INSTALL_PATH)/bin/ai_model
+	mkdir -p $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/lib/ $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/bin/user_config.json $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/bin/resource/* $(INSTALL_PATH)/bin/ai_model
 
 clean: $(TOPSUBDIRS)
 	$(call print_target)
