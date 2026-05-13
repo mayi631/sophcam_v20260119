@@ -40,9 +40,10 @@ int8_t get_max_red_light_level(void)
         case 1: // 0%-25% 电量，最大只能开到3档
             return 3;
         case 2: // 25%-70% 电量，最大只能开到5档
+        case 3:
             return 5;
         case 0: // 充电状态
-        case 3: // 满电
+        case 4: // 满电
         default:
             return 7; // 最大7档
     }

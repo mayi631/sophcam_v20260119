@@ -14,6 +14,10 @@
 #include "page_vediomenu_res.h"
 #include "page_sysmenu_brightness.h"
 #include "infrared.h"
+#include "anip_service.h"
+#include "media_osd.h"
+#include "animal_labels.h"
+#include "mlog.h"
 
 lv_obj_t *label_Vedio_Durtime_s; //录像时长
 lv_obj_t *obj_vedio_s;           //底层窗口
@@ -58,6 +62,21 @@ static int g_zoom_longpress_dir = 0;               // 长按方向: 0=无, 1=缩
 static bool g_zoom_longpress_active = false;       // 是否正在长按
 
 lv_obj_t *g_video_top_controls[6];  // 存储视频页面顶部控件对象
+
+// ========== 实时动物检测相关 ==========
+#define VIDEO_MAX_ANIMAL_BOXES 5
+
+typedef struct {
+    lv_obj_t *label;
+    bool valid;
+} video_animal_box_t;
+
+static ANIP_SERVICE_HANDLE_T g_video_anip_handle = -1;
+static lv_obj_t *g_video_ani_canvas = NULL;
+static bool g_video_anip_enabled = false;
+static video_animal_box_t g_video_ani_boxes[VIDEO_MAX_ANIMAL_BOXES] = {0};
+#define VIDEO_ANI_LABEL_BG_COLOR lv_color_hex(0x8000FF00)
+// ===================================
 
 static void video_zoomin_key_cb(void);//w按键回调
 static void video_zoomout_key_cb(void);//t按键回调
@@ -352,6 +371,35 @@ static void cleanup_vedio_page_resources(void)
     delete_zoombar_timer_handler();
     // 删除图标选择弹窗
     delete_icon_select_popup();
+
+    // 停止实时动物检测
+    if (g_video_anip_enabled) {
+        g_video_anip_enabled = false;
+        if (g_video_anip_handle >= 0) {
+            ANIP_SERVICE_Clear_Rects(g_video_anip_handle);
+            ANIP_SERVICE_Destroy(g_video_anip_handle);
+            g_video_anip_handle = -1;
+        }
+        ANIP_SERVICE_Unregister_DrawRects_Callback();
+        ANIP_SERVICE_Unregister_Result_Callback();
+        MLOG_INFO("[VANIP] Animal detection stopped on video page\n");
+    }
+    /* 销毁覆盖层 */
+    if (g_video_ani_canvas != NULL) {
+        if (lv_obj_is_valid(g_video_ani_canvas)) {
+            lv_obj_del(g_video_ani_canvas);
+        }
+        g_video_ani_canvas = NULL;
+    }
+    for (int i = 0; i < VIDEO_MAX_ANIMAL_BOXES; i++) {
+        if (g_video_ani_boxes[i].label != NULL) {
+            if (lv_obj_is_valid(g_video_ani_boxes[i].label)) {
+                lv_obj_del(g_video_ani_boxes[i].label);
+            }
+            g_video_ani_boxes[i].label = NULL;
+        }
+        g_video_ani_boxes[i].valid = false;
+    }
 }
 
 //参数动态更新回调
@@ -736,6 +784,234 @@ static void key_takephoto_power_callback(void)
     }
 }
 
+// ========== 视频模式实时动物检测 ==========
+
+/* 前向声明 */
+static void video_anip_result_ui_update(void *user_data);
+
+typedef struct {
+    CVI_U32 count;
+    ANIP_RESULT_S results[VIDEO_MAX_ANIMAL_BOXES];
+} video_anip_result_data_t;
+
+/* OSD层绘制框回调 */
+static int video_anip_draw_rects_callback(CVI_U32 osd_id, CVI_U32 num, RECT_S* rects)
+{
+    CVI_S32 ret = MEDIA_DrawRects(osd_id, num, rects);
+    if (ret != 0) {
+        MLOG_ERR("[VANIP] MEDIA_DrawRects failed: %d\n", ret);
+    }
+    return ret;
+}
+
+/* 动物识别结果回调 */
+static void video_anip_result_callback(CVI_U32 osd_id, ANIP_RESULT_S* results, CVI_U32 count)
+{
+    (void)osd_id;
+    if (!g_video_anip_enabled || count == 0 || results == NULL) {
+        return;
+    }
+    static video_anip_result_data_t result_data;
+    result_data.count = (count > VIDEO_MAX_ANIMAL_BOXES) ? VIDEO_MAX_ANIMAL_BOXES : count;
+    for (CVI_U32 i = 0; i < result_data.count; i++) {
+        result_data.results[i] = results[i];
+    }
+    lv_async_call(video_anip_result_ui_update, &result_data);
+}
+
+/* 在主线程中更新标签UI */
+static void video_anip_result_ui_update(void *user_data)
+{
+    video_anip_result_data_t *result_data = (video_anip_result_data_t *)user_data;
+    CVI_U32 count = result_data->count;
+
+    if (g_video_ani_canvas == NULL || !lv_obj_is_valid(g_video_ani_canvas)) {
+        return;
+    }
+
+    RECT_S rects[VIDEO_MAX_ANIMAL_BOXES] = {0};
+    CVI_U32 rect_count = ANIP_SERVICE_Get_Rects(rects, VIDEO_MAX_ANIMAL_BOXES);
+
+    /* 隐藏所有旧标签 */
+    for (int i = 0; i < VIDEO_MAX_ANIMAL_BOXES; i++) {
+        if (g_video_ani_boxes[i].label != NULL && lv_obj_is_valid(g_video_ani_boxes[i].label)) {
+            lv_obj_add_flag(g_video_ani_boxes[i].label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    CVI_U32 show_count = (count < rect_count) ? count : rect_count;
+    if (show_count > VIDEO_MAX_ANIMAL_BOXES) show_count = VIDEO_MAX_ANIMAL_BOXES;
+
+    for (CVI_U32 i = 0; i < show_count; i++) {
+        if (strlen(result_data->results[i].name) == 0 || result_data->results[i].cls_idx != 0) {
+            continue;
+        }
+
+        RECT_S* rect = &rects[i];
+        if (rect->u32Width <= 0 || rect->u32Height <= 0) {
+            continue;
+        }
+
+        video_animal_box_t* box = &g_video_ani_boxes[i];
+
+        if (box->label == NULL || !lv_obj_is_valid(box->label)) {
+            box->label = lv_label_create(g_video_ani_canvas);
+            if (box->label == NULL) continue;
+            lv_obj_set_style_bg_color(box->label, VIDEO_ANI_LABEL_BG_COLOR, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(box->label, LV_OPA_80, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(box->label, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(box->label, get_usr_fonts(ALI_PUHUITI_FONTPATH, 16), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_all(box->label, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(box->label, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+
+        char label_text[64];
+        snprintf(label_text, sizeof(label_text), "%s", result_data->results[i].name);
+        lv_label_set_text(box->label, label_text);
+
+        CVI_S32 label_x = rect->s32X + 4;
+        CVI_S32 label_y = rect->s32Y - 24;
+        if (label_y < 0) label_y = rect->s32Y + 4;
+
+        lv_obj_set_pos(box->label, label_x, label_y);
+        lv_obj_clear_flag(box->label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* 创建覆盖层 */
+static void video_create_anip_overlay(lv_obj_t *parent)
+{
+    if (parent == NULL || !lv_obj_is_valid(parent)) {
+        MLOG_ERR("[VANIP] Parent invalid\n");
+        return;
+    }
+    /* 先销毁已有的 */
+    if (g_video_ani_canvas != NULL) {
+        if (lv_obj_is_valid(g_video_ani_canvas)) {
+            lv_obj_del(g_video_ani_canvas);
+        }
+        g_video_ani_canvas = NULL;
+    }
+    for (int i = 0; i < VIDEO_MAX_ANIMAL_BOXES; i++) {
+        if (g_video_ani_boxes[i].label != NULL) {
+            if (lv_obj_is_valid(g_video_ani_boxes[i].label)) {
+                lv_obj_del(g_video_ani_boxes[i].label);
+            }
+            g_video_ani_boxes[i].label = NULL;
+        }
+        g_video_ani_boxes[i].valid = false;
+    }
+
+    g_video_ani_canvas = lv_obj_create(parent);
+    if (g_video_ani_canvas == NULL) {
+        MLOG_ERR("[VANIP] Failed to create overlay\n");
+        return;
+    }
+    lv_obj_set_size(g_video_ani_canvas, H_RES, V_RES);
+    lv_obj_set_pos(g_video_ani_canvas, 0, 0);
+    lv_obj_set_style_bg_opa(g_video_ani_canvas, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(g_video_ani_canvas, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(g_video_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(g_video_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(g_video_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_SCROLL_CHAIN);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(g_video_ani_canvas, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_move_to_index(g_video_ani_canvas, -1);
+    MLOG_INFO("[VANIP] Overlay created\n");
+}
+
+/* 启动服务 */
+static int video_start_anip_service(void)
+{
+    if (g_video_anip_handle >= 0) {
+        MLOG_INFO("[VANIP] Already started\n");
+        return 0;
+    }
+
+    ANIP_SERVICE_PARAM_S param = {0};
+    param.in_vpss_grp = 1;
+    param.in_vpss_chn = 0;
+    param.in_width = 640;
+    param.in_height = 480;
+    param.osd_mirror = 0;
+    param.sensitivity = 30;
+    param.max_results = VIDEO_MAX_ANIMAL_BOXES;
+    param.det_enable = 1;
+    param.rec_enable = 1;
+    param.osd_id = 1;
+
+    ANIP_SERVICE_Register_DrawRects_Callback(video_anip_draw_rects_callback);
+    ANIP_SERVICE_Register_Result_Callback(video_anip_result_callback);
+
+    CVI_S32 ret = ANIP_SERVICE_Create(&g_video_anip_handle, &param);
+    if (ret != 0) {
+        MLOG_ERR("[VANIP] Create failed: %d\n", ret);
+        ANIP_SERVICE_Unregister_DrawRects_Callback();
+        ANIP_SERVICE_Unregister_Result_Callback();
+        g_video_anip_handle = -1;
+        return -1;
+    }
+
+    g_video_anip_enabled = true;
+    MLOG_INFO("[VANIP] Service started, handle=%d\n", g_video_anip_handle);
+    return 0;
+}
+
+/* 停止服务 */
+static void video_stop_anip_service(void)
+{
+    g_video_anip_enabled = false;
+    if (g_video_anip_handle >= 0) {
+        ANIP_SERVICE_Clear_Rects(g_video_anip_handle);
+        ANIP_SERVICE_Destroy(g_video_anip_handle);
+        g_video_anip_handle = -1;
+    }
+    ANIP_SERVICE_Unregister_DrawRects_Callback();
+    ANIP_SERVICE_Unregister_Result_Callback();
+    MLOG_INFO("[VANIP] Service stopped\n");
+}
+
+/* AI按键回调 - 切换识别 */
+static void video_play_callback(void)
+{
+    if (g_video_anip_enabled) {
+        MLOG_INFO("[VANIP] Turning OFF\n");
+        video_stop_anip_service();
+        /* 销毁覆盖层 */
+        if (g_video_ani_canvas != NULL) {
+            if (lv_obj_is_valid(g_video_ani_canvas)) {
+                lv_obj_del(g_video_ani_canvas);
+            }
+            g_video_ani_canvas = NULL;
+        }
+        for (int i = 0; i < VIDEO_MAX_ANIMAL_BOXES; i++) {
+            if (g_video_ani_boxes[i].label != NULL) {
+                if (lv_obj_is_valid(g_video_ani_boxes[i].label)) {
+                    lv_obj_del(g_video_ani_boxes[i].label);
+                }
+                g_video_ani_boxes[i].label = NULL;
+            }
+            g_video_ani_boxes[i].valid = false;
+        }
+    } else {
+        MLOG_INFO("[VANIP] Turning ON\n");
+        video_create_anip_overlay(obj_vedio_s);
+        if (video_start_anip_service() != 0) {
+            MLOG_ERR("[VANIP] Start failed\n");
+            if (g_video_ani_canvas != NULL) {
+                if (lv_obj_is_valid(g_video_ani_canvas)) {
+                    lv_obj_del(g_video_ani_canvas);
+                }
+                g_video_ani_canvas = NULL;
+            }
+        }
+    }
+}
+
 void Home_Vedio(lv_ui_t *ui)
 {
     MLOG_DBG("loading obj_vedio_s...\n");
@@ -949,6 +1225,7 @@ void Home_Vedio(lv_ui_t *ui)
     takephoto_register_zoomout_callback(video_zoomout_key_cb);
     takephoto_register_left_callback(video_left_callback);
     takephoto_register_right_callback(video_right_callback);
+    takephoto_register_play_callback(video_play_callback);
     takephoto_power_callback(key_takephoto_power_callback);
     //创建时间更新定时器
     if(date_timer_s == NULL) {

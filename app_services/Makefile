@@ -66,6 +66,9 @@ endif
 ifeq ($(CONFIG_SERVICES_FACEP),y)
 SRCS_C      += $(SDIR)/facep/facep_service.c
 endif
+ifeq ($(CONFIG_SERVICES_ANIP),y)
+SRCS_C      += $(SDIR)/anip/anip_service.c
+endif
 
 SRCS_C      += $(SDIR)/jpegp/jpegp.c
 SRCS_C      += $(SDIR)/zoomp/zoomp.c
@@ -95,6 +98,8 @@ INCS		+= -I$(RTSP_DIR)/include
 INCS		+= -I$(HAL_DIR)/include
 INCS		+= -I$(TDL_SDK_DIR)/include
 INCS		+= -I$(FFMPEG_DIR)/include
+INCS		+= -I$(KT_ANI_SDK_DIR)/include
+INCS		+= -I$(SRCTREE)/applications/dashcam/ui/aicamera/dc309/include
 
 #
 LIB_DIR		?= lib

@@ -25,6 +25,11 @@ config OSS_LVGL
 	help
 		Say Y if you want to use OSS LVGL.
 
+config COMPONENTS_KT_ANI_SDK
+	bool "kt animal sdk"
+	help
+		Say Y if you want to use animal sdk.
+
 endmenu
 
 menu "Compiler Configuration"

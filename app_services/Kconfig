@@ -82,6 +82,10 @@ config SERVICES_FACEP
 	help
 		Say Y if you want to enable Face Process.
 
+config SERVICES_ANIP
+	bool "Animal Recognition Process"
+	help
+		Say Y if you want to enable Animal Recognition Process.
 
 config SERVICES_SPEECH
 	bool "Speech Service"

@@ -19,6 +19,10 @@
 #include "cvi_comm_vo.h"
 #include "cvi_vo.h"
 #include "facep_service.h"
+#include "anip_service.h"
+#include "media_init.h"
+#include "media_osd.h"
+#include "liveview.h"
 #include "linux/input.h"
 #include "rtt.h"
 #include "infrared.h"
@@ -29,11 +33,15 @@
 #include "kt_ani_api.h"
 #include "animal_labels.h"
 #include "mlog.h"
-#include <pthread.h>
 
 // 动物识别相关宏定义
-#define ANI_MODEL_DIR       "/mnt/data/bin/ai_model/"
-#define ANI_MAX_RESULTS     10
+#define MAX_ANIMAL_BOXES    5         // 最大同时显示的识别框数量
+
+// 动物识别框结构体
+typedef struct {
+    lv_obj_t *label;           // 标签
+    bool valid;                // 是否有效
+} animal_box_t;
 
 // 控件状态结构体
 typedef struct {
@@ -82,8 +90,8 @@ char *red_light_image_level[] = {"IR 1.png", "IR 2.png", "IR 3.png", "IR 4.png",
 // 光标图片数组 [光标类型][颜色: 0=Green, 1=Red, 2=Yellow]
 const char* cursor_image_array[] = {
     "Icon_1_cross_Red.png",
-    "Icon_2_cross_Red.png",
-    "Icon_3_cross_RED.png",
+    // "Icon_2_cross_Red.png",
+    // "Icon_3_cross_RED.png",
     "Icon_4_cross_RED.png",
     "Icon_5_cross_Red.png",
     "Icon_6_cross_Red.png",
@@ -96,15 +104,12 @@ static lv_timer_t *g_zoom_longpress_timer = NULL;  // 长按定时器
 static int g_zoom_longpress_dir = 0;               // 长按方向: 0=无, 1=缩小, 2=放大
 static bool g_zoom_longpress_active = false;       // 是否正在长按
 
-// 动物识别相关全局变量
-static bool s_is_ktani_init = true;               // 动物识别引擎是否已初始化（已废弃，仅保持兼容性）
-static lv_obj_t *s_ani_loading_scr = NULL;         // 加载提示页面
-static lv_timer_t *s_ani_loading_timer = NULL;    // 加载动画定时器
-static int s_loading_dot_count = 0;                // 加载动画点数
-static char s_animal_result[512] = {0};           // 识别结果
-static bool s_is_animal_recognizing = false;      // 是否正在识别
-static char s_recognize_image_path[256] = {0};    // 当前识别图片路径
-static int s_init_stage = 0;                       // 0=无操作, 1=初始化中, 2=识别中
+// 实时动物检测相关全局变量
+static ANIP_SERVICE_HANDLE_T g_anip_handle = -1;   // 动物识别服务句柄
+static lv_obj_t *s_ani_canvas = NULL;              // 动物检测框绘制画布
+static bool s_anip_enabled = false;                // 实时动物检测是否启用
+static animal_box_t s_ani_boxes[MAX_ANIMAL_BOXES] = {0}; // 动物标签对象
+#define ANI_LABEL_BG_COLOR lv_color_hex(0x8000FF00) // 半透明绿色背景
 
 // 资源释放函数声明
 static void release_HomePhoto_resources(lv_ui_t *ui);
@@ -131,15 +136,14 @@ static void icon_select_redlight_callback(lv_event_t *e);
 static void icon_select_brightness_callback(lv_event_t *e);
 static void icon_select_shootmode_callback(lv_event_t *e);
 
-// 动物识别相关函数声明
-static int init_animal_recognition_engine(void);
-static void destroy_animal_recognition_engine(void);
-static void *animal_recognition_thread(void *arg);
-static void show_animal_loading_page(void);
-static void hide_animal_loading_page(void);
-static void animal_loading_timer_cb(lv_timer_t *timer);
-static void animal_recognition_callback(const char *result);
-static void animal_msgbox_close_cb(lv_event_t *e);
+// 实时动物检测相关函数声明
+static int anip_draw_rects_callback(CVI_U32 osd_id, CVI_U32 num, RECT_S* rects);
+static void anip_result_callback(CVI_U32 osd_id, ANIP_RESULT_S* results, CVI_U32 count);
+static void anip_result_ui_update(void *user_data);
+static void create_anip_overlay(lv_obj_t *parent);
+static void destroy_anip_overlay(void);
+static int start_anip_service(void);
+static void stop_anip_service(void);
 
 bool get_is_photo_back(void)
 {
@@ -570,9 +574,6 @@ static void release_HomePhoto_resources(lv_ui_t *ui)
     delete_batter_tips_mbox(); // 低电量不允许开wifi弹窗销毁
     destroy_voice_input_popup(); // ai语音自定义弹窗销毁
     delete_icon_select_popup(); // 图标选择弹窗销毁（停止隐藏动画）
-    // 隐藏动物识别加载页面
-    hide_animal_loading_page();
-    s_is_animal_recognizing = false;
 
     if(date_timer_s != NULL) {
         lv_timer_del(date_timer_s);
@@ -592,6 +593,10 @@ static void release_HomePhoto_resources(lv_ui_t *ui)
     FACEP_SERVICE_Unregister_Smile_Pre_Callback();
     FACEP_SERVICE_Unregister_Smile_Post_Callback();
     set_current_page_handler(NULL);
+
+    // 停止实时动物检测服务
+    stop_anip_service();
+    destroy_anip_overlay();
 }
 
 // 菜单按键处理回调函数
@@ -635,67 +640,24 @@ static void photo_mode_callback(void)
                             0, 0, false, true);
 }
 
-// AI按键处理回调函数（集成动物识别功能）
+// AI按键处理回调函数 - 切换实时动物检测的打开/关闭
 static void photo_play_callback(void)
 {
     restore_icon_on_any_key(); // 任意键恢复图标
 
-    extern bool is_animal_recognition_page;
-
-    // 检查是否从动物识别入口进入
-    if (is_animal_recognition_page) {
-        if (s_is_animal_recognizing) {
-            MLOG_WARN("[Animal] 正在识别中，忽略重复点击\n");
-            return;
+    if (s_anip_enabled) {
+        /* 当前已开启，关闭检测 */
+        MLOG_INFO("[ANIP] Turning OFF animal detection\n");
+        stop_anip_service();
+        destroy_anip_overlay();
+    } else {
+        /* 当前已关闭，开启检测 */
+        MLOG_INFO("[ANIP] Turning ON animal detection\n");
+        create_anip_overlay(g_ui.page_photo.photoscr);
+        if (start_anip_service() != 0) {
+            MLOG_ERR("[ANIP] Failed to start animal detection service\n");
+            destroy_anip_overlay();
         }
-
-        // 获取最新的照片路径
-        static char s_latest_photo_path[256] = {0};
-        static char **local_filenames = NULL;
-        static int local_total_files = 0;
-
-        get_all_filenames(&local_filenames, &local_total_files);
-        if (local_total_files == 0) {
-            MLOG_WARN("[Animal] 没有可识别的图片，请先拍照\n");
-            return;
-        }
-
-        // 使用最新拍摄的照片
-        strncpy(s_latest_photo_path, local_filenames[0], sizeof(s_latest_photo_path) - 1);
-        s_latest_photo_path[sizeof(s_latest_photo_path) - 1] = '\0';
-
-        // 获取缩略图路径（参考 page_ai_takephoto.c 的处理方式）
-        memset(s_recognize_image_path, 0, sizeof(s_recognize_image_path));
-        char path_large[100] = {0};
-        get_thumbnail_path(s_latest_photo_path, path_large, sizeof(path_large), PHOTO_LARGE_PATH);
-        // 提取相对路径（从第一个 / 开始），SDK 需要 /mnt/sd/... 格式的路径
-        char *rel_path = strchr(path_large, '/');
-        if (rel_path) {
-            strncpy(s_recognize_image_path, rel_path, sizeof(s_recognize_image_path) - 1);
-        } else {
-            strncpy(s_recognize_image_path, path_large, sizeof(s_recognize_image_path) - 1);
-        }
-
-        MLOG_INFO("[Animal] 使用最新照片进行识别: %s\n", s_recognize_image_path);
-
-        // 清理内存
-        clean_all_malloc(local_filenames, local_total_files);
-
-        s_is_animal_recognizing = true;
-
-        // 显示加载页面
-        show_animal_loading_page();
-
-        // 使用新线程执行识别（避免阻塞UI）
-        pthread_t tid;
-        int ret = pthread_create(&tid, NULL, animal_recognition_thread, s_recognize_image_path);
-        if (ret != 0) {
-            MLOG_ERR("[Animal] 创建识别线程失败: %d\n", ret);
-            hide_animal_loading_page();
-            s_is_animal_recognizing = false;
-            return;
-        }
-        pthread_detach(tid);
     }
 }
 
@@ -848,15 +810,21 @@ void Home_Photo(lv_ui_t *ui)
     show_image(Home_Photo_Item->img_batter,"充电.png");
 
     //缩放
-    lv_obj_t *imgbtn_zoomout = lv_imagebutton_create(Home_Photo_Item->photoscr);
-    lv_obj_align(imgbtn_zoomout, LV_ALIGN_LEFT_MID, 12, -42);
-    lv_obj_set_size(imgbtn_zoomout, 40, 40);
+    lv_obj_t *imgbtn_zoomout = lv_button_create(Home_Photo_Item->photoscr);
+    lv_obj_align(imgbtn_zoomout, LV_ALIGN_LEFT_MID, 6, -42);
+    lv_obj_set_size(imgbtn_zoomout, 60, 60);
+    lv_obj_set_style_bg_opa(imgbtn_zoomout, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(imgbtn_zoomout, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(imgbtn_zoomout, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     show_image(imgbtn_zoomout, "T.png");
     lv_obj_add_event_cb(imgbtn_zoomout, photo_zoom_event_cb, LV_EVENT_ALL, (void *)(intptr_t)2);
 
-    lv_obj_t *imgbtn_zoomin = lv_imagebutton_create(Home_Photo_Item->photoscr);
-    lv_obj_align(imgbtn_zoomin, LV_ALIGN_LEFT_MID, 12, 42);
-    lv_obj_set_size(imgbtn_zoomin, 40, 40);
+    lv_obj_t *imgbtn_zoomin = lv_button_create(Home_Photo_Item->photoscr);
+    lv_obj_align(imgbtn_zoomin, LV_ALIGN_LEFT_MID, 6, 42);
+    lv_obj_set_size(imgbtn_zoomin, 60, 60);
+    lv_obj_set_style_bg_opa(imgbtn_zoomin, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_shadow_width(imgbtn_zoomin, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(imgbtn_zoomin, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     show_image(imgbtn_zoomin, "W.png");
     lv_obj_add_event_cb(imgbtn_zoomin, photo_zoom_event_cb, LV_EVENT_ALL, (void *)(intptr_t)1);
 
@@ -1315,34 +1283,52 @@ static void icon_select_redlight_callback(lv_event_t *e)
         return;
     }
 
-    // 构建红光亮度选项
-    static icon_select_item_t redlight_items[7];
-    static char redlight_labels[7][32];
-    
-    for (int i = 0; i < 7; i++) {
-        // 检查图标是否有效
-        if (red_light_image_level[i] != NULL) {
-            redlight_items[i].icon = red_light_image_level[i];
-            // 标签使用图标名称（去掉.png后缀）
-            size_t len = strlen(red_light_image_level[i]);
-            if (len > 4) {
-                strncpy(redlight_labels[i], red_light_image_level[i], len - 4);
-                redlight_labels[i][len - 4] = '\0';
-            } else {
-                snprintf(redlight_labels[i], sizeof(redlight_labels[i]), "Level %d", i + 1);
-            }
+    // 根据电池电量获取最大允许的档位
+    int8_t max_level = get_max_red_light_level();
+
+    // 构建红外灯亮度选项数组（0=关闭，1-max_level=亮度档位）
+    // 选项数量 = 1（关闭选项）+ max_level（允许的最大档位）
+    int item_count = 1 + max_level;
+    if (item_count > 8) item_count = 8;  // 最多8个选项
+
+    static icon_select_item_t redlight_items[8];
+    static char redlight_labels[8][16];
+
+    // 第一个选项是关闭
+    redlight_items[0].icon = "guanbi.png";
+    snprintf(redlight_labels[0], sizeof(redlight_labels[0]), "关闭");
+    redlight_items[0].label = redlight_labels[0];
+
+    // 后续选项是亮度档位
+    for (int i = 1; i < item_count; i++) {
+        int level_index = i - 1;  // 对应 red_light_image_level 数组索引
+        if (level_index < 7) {
+            redlight_items[i].icon = red_light_image_level[level_index];
         } else {
-            redlight_items[i].icon = "1.png";  // 默认图标
-            snprintf(redlight_labels[i], sizeof(redlight_labels[i]), "Level %d", i + 1);
+            redlight_items[i].icon = red_light_image_level[6];
         }
+        snprintf(redlight_labels[i], sizeof(redlight_labels[i]), "等级%d", i);
         redlight_items[i].label = redlight_labels[i];
     }
-    
+
+    // 计算当前选中的索引（根据当前亮度级别和最大档位限制）
+    uint32_t selected_index = 0;
+    if (brightness_level > 0) {
+        if (brightness_level > max_level) {
+            selected_index = max_level;  // 如果当前档位超出限制，选中最大档位
+        } else {
+            selected_index = brightness_level;
+        }
+    }
+
     // 创建弹窗
     create_icon_select_popup(g_ui.page_photo.photoscr, ICON_SELECT_REDLIGHT,
-                            redlight_items, 7,
-                            (brightness_level > 0 ? brightness_level - 1 : 0),
+                            redlight_items, item_count,
+                            selected_index,
                             icon_select_redlight_on_select, NULL);
+
+    MLOG_DBG("拍照模式红外灯弹窗：最大档位=%d，选项数量=%d，当前选中=%d\n",
+             max_level, item_count, selected_index);
 }
 
 // 屏幕亮度选择项回调（内部）
@@ -1662,305 +1648,263 @@ static void photo_zoom_event_cb(lv_event_t* e)
     }
 }
 
-// ========== 动物识别功能实现 ==========
-static lv_obj_t *mbox_s = NULL;
-/* 初始化动物识别引擎 - 单例模式，已初始化则跳过 */
-static int init_animal_recognition_engine(void)
+// ========== 实时动物检测功能实现 ==========
+
+// 用于 lv_async_call 的数据结构
+typedef struct {
+    CVI_U32 count;
+    ANIP_RESULT_S results[MAX_ANIMAL_BOXES];  // 识别结果（名称）
+} anip_result_data_t;
+
+/* 动物检测框绘制回调函数 - 供anip_service调用
+ * 识别框只在OSD层绘制，UI层只显示标签
+ */
+static int anip_draw_rects_callback(CVI_U32 osd_id, CVI_U32 num, RECT_S* rects)
 {
-    // 如果已经初始化了，直接返回
-    if (s_is_ktani_init == false) {
-        MLOG_INFO("[Animal] 动物识别引擎已初始化，跳过\n");
+    /* 直接调用 MEDIA_DrawRects 绘制矩形框（OSD层） */
+    CVI_S32 ret = MEDIA_DrawRects(osd_id, num, rects);
+    if (ret != 0) {
+        MLOG_ERR("[ANIP] MEDIA_DrawRects failed: %d\n", ret);
+    }
+    return ret;
+}
+
+/* 动物识别结果回调函数 - 供anip_service调用
+ * 返回动物名称，用于在UI层显示标签
+ * 注意：框由OSD层绘制，标签显示在UI层顶部区域
+ */
+static void anip_result_callback(CVI_U32 osd_id, ANIP_RESULT_S* results, CVI_U32 count)
+{
+    (void)osd_id;
+
+    /* 检查是否启用 */
+    if (!s_anip_enabled || count == 0 || results == NULL) {
+        return;
+    }
+
+    /* 将结果数据复制到临时结构，通过 lv_async_call 发送到主线程 */
+    static anip_result_data_t result_data;
+    result_data.count = (count > MAX_ANIMAL_BOXES) ? MAX_ANIMAL_BOXES : count;
+    for (CVI_U32 i = 0; i < result_data.count; i++) {
+        result_data.results[i] = results[i];
+    }
+
+    /* 使用 lv_async_call 调度到主线程执行UI操作 */
+    lv_async_call(anip_result_ui_update, &result_data);
+}
+
+/* 在主线程中更新动物名称标签UI
+ * 通过 ANIP_SERVICE_Get_Rects 获取框位置，将标签显示在对应框的上方
+ */
+static void anip_result_ui_update(void *user_data)
+{
+    anip_result_data_t *result_data = (anip_result_data_t *)user_data;
+    CVI_U32 count = result_data->count;
+
+    /* 检查画布有效性 */
+    if (s_ani_canvas == NULL || !lv_obj_is_valid(s_ani_canvas)) {
+        return;
+    }
+
+    /* 从 anip_service 获取最新的框位置信息 */
+    RECT_S rects[MAX_ANIMAL_BOXES] = {0};
+    CVI_U32 rect_count = ANIP_SERVICE_Get_Rects(rects, MAX_ANIMAL_BOXES);
+
+    /* 清除所有旧的标签 */
+    for (int i = 0; i < MAX_ANIMAL_BOXES; i++) {
+        if (s_ani_boxes[i].label != NULL && lv_obj_is_valid(s_ani_boxes[i].label)) {
+            lv_obj_add_flag(s_ani_boxes[i].label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* 在对应检测框上方显示动物名称 */
+    CVI_U32 show_count = (count < rect_count) ? count : rect_count;
+    if (show_count > MAX_ANIMAL_BOXES) show_count = MAX_ANIMAL_BOXES;
+
+    for (CVI_U32 i = 0; i < show_count; i++) {
+        if (strlen(result_data->results[i].name) == 0) {
+            continue;
+        }
+
+        /* 只在动物类别(cls_idx==0)时才显示标签，人和车辆不显示 */
+        if (result_data->results[i].cls_idx != 0) {
+            continue;
+        }
+
+        RECT_S* rect = &rects[i];
+
+        /* 跳过无效的框 */
+        if (rect->u32Width <= 0 || rect->u32Height <= 0) {
+            continue;
+        }
+
+        animal_box_t* box = &s_ani_boxes[i];
+
+        /* 创建或更新标签 */
+        if (box->label == NULL || !lv_obj_is_valid(box->label)) {
+            box->label = lv_label_create(s_ani_canvas);
+            if (box->label == NULL) {
+                continue;
+            }
+            lv_obj_set_style_bg_color(box->label, ANI_LABEL_BG_COLOR, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(box->label, LV_OPA_80, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_color(box->label, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(box->label, get_usr_fonts(ALI_PUHUITI_FONTPATH, 16), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_all(box->label, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(box->label, 4, LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+
+        /* 设置标签文本 */
+        char label_text[64];
+        snprintf(label_text, sizeof(label_text), "%s", result_data->results[i].name);
+        lv_label_set_text(box->label, label_text);
+
+        /* 定位标签在框的左上角上方 */
+        CVI_S32 label_x = rect->s32X + 4;  /* 框左边距+4像素偏移 */
+        CVI_S32 label_y = rect->s32Y - 24; /* 框顶部向上偏移24像素 */
+
+        /* 边界检查，防止标签超出屏幕顶部 */
+        if (label_y < 0) label_y = rect->s32Y + 4;
+
+        lv_obj_set_pos(box->label, label_x, label_y);
+        lv_obj_clear_flag(box->label, LV_OBJ_FLAG_HIDDEN);
+
+        // MLOG_INFO("[ANIP] Label %d: %s at (%d, %d) on rect (%d,%d %dx%d)\n",
+        //           i, result_data->results[i].name, label_x, label_y,
+        //           rect->s32X, rect->s32Y, rect->u32Width, rect->u32Height);
+    }
+}
+
+/* 创建动物检测覆盖层 */
+static void create_anip_overlay(lv_obj_t *parent)
+{
+    if (parent == NULL || !lv_obj_is_valid(parent)) {
+        MLOG_ERR("[ANIP] Parent object is invalid!\n");
+        return;
+    }
+
+    /* 如果已存在，先销毁 */
+    destroy_anip_overlay();
+
+    /* 创建透明容器用于承载检测框 */
+    s_ani_canvas = lv_obj_create(parent);
+    if (s_ani_canvas == NULL) {
+        MLOG_ERR("[ANIP] Failed to create overlay container!\n");
+        return;
+    }
+
+    /* 设置为透明，不阻挡点击事件 */
+    lv_obj_set_size(s_ani_canvas, H_RES, V_RES);
+    lv_obj_set_pos(s_ani_canvas, 0, 0);
+    lv_obj_set_style_bg_opa(s_ani_canvas, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_opa(s_ani_canvas, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_pad_all(s_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(s_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(s_ani_canvas, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+    /* 不拦截点击事件，让事件穿透到下面的控件 */
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_SCROLL_CHAIN);
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_clear_flag(s_ani_canvas, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+
+    /* 确保在最上层 */
+    lv_obj_move_to_index(s_ani_canvas, -1);
+
+    MLOG_INFO("[ANIP] Animal detection overlay created\n");
+}
+
+/* 销毁动物检测覆盖层 */
+static void destroy_anip_overlay(void)
+{
+    if (s_ani_canvas != NULL) {
+        if (lv_obj_is_valid(s_ani_canvas)) {
+            lv_obj_del(s_ani_canvas);
+        }
+        s_ani_canvas = NULL;
+    }
+
+    /* 销毁所有标签对象 */
+    for (int i = 0; i < MAX_ANIMAL_BOXES; i++) {
+        if (s_ani_boxes[i].label != NULL) {
+            if (lv_obj_is_valid(s_ani_boxes[i].label)) {
+                lv_obj_del(s_ani_boxes[i].label);
+            }
+            s_ani_boxes[i].label = NULL;
+        }
+        s_ani_boxes[i].valid = false;
+    }
+
+    MLOG_INFO("[ANIP] Animal detection overlay destroyed\n");
+}
+
+/* 启动实时动物检测服务（带重试机制，等待VPROC初始化完成） */
+static int start_anip_service(void)
+{
+    /* 检查是否已经启动 */
+    if (g_anip_handle >= 0) {
+        MLOG_INFO("[ANIP] Service already started, handle=%d\n", g_anip_handle);
         return 0;
     }
 
-    s_init_stage = 1;  // 设置为初始化阶段
-    MLOG_INFO("[Animal] 开始初始化动物识别引擎，请稍候...\n");
+    MLOG_INFO("[ANIP] start_anip_service called\n");
 
-    // 调用初始化
-    KTAniError ret = kt_ani_init(ANI_MODEL_DIR, ANI_MODEL_DIR, ANI_MODEL_DIR);
-    s_is_ktani_init = false;  // 标记已初始化
+    /* 配置服务参数 - 使用 vproc1 (grp=1，已绑定到VI) */
+    ANIP_SERVICE_PARAM_S param = {0};
+    param.in_vpss_grp = 1;  /* VPSS Group 1 - 与vproc1配置一致 */
+    param.in_vpss_chn = 0;  /* VPSS通道0 */
+    param.in_width = 640;   /* 根据实际配置调整 */
+    param.in_height = 480;
+    param.osd_mirror = 0;
+    param.sensitivity = 30;
+    param.max_results = MAX_ANIMAL_BOXES;
+    param.det_enable = 1;
+    param.rec_enable = 1;
 
-    if (ret != KT_ANI_OK) {
-        MLOG_ERR("[Animal] 初始化失败: %d\n", ret);
-        s_init_stage = 0;
+    MLOG_INFO("[ANIP] Using VPSS grp=%d, chn=%d\n", param.in_vpss_grp, param.in_vpss_chn);
+
+    /* 配置 osd_id = 1 对应 config_media_cam0_photo_*.ini 中的 osd_content1 (type=4 OBJECT类型)
+     * 用于绘制动物检测框，与人脸识别使用相同的OSD区域绘制机制 */
+    param.osd_id = 1;
+
+    /* 注册回调函数 */
+    ANIP_SERVICE_Register_DrawRects_Callback(anip_draw_rects_callback);
+    ANIP_SERVICE_Register_Result_Callback(anip_result_callback);
+
+    /* 创建服务 */
+    CVI_S32 ret = ANIP_SERVICE_Create(&g_anip_handle, &param);
+    if (ret != 0) {
+        MLOG_ERR("[ANIP] ANIP_SERVICE_Create failed: %d\n", ret);
+        ANIP_SERVICE_Unregister_DrawRects_Callback();
+        ANIP_SERVICE_Unregister_Result_Callback();
+        g_anip_handle = -1;
         return -1;
     }
 
-    MLOG_INFO("[Animal] 动物识别引擎初始化成功\n");
-    s_init_stage = 0;
+    s_anip_enabled = true;
+    MLOG_INFO("[ANIP] Real-time animal detection service started, handle=%d\n", g_anip_handle);
     return 0;
 }
 
-/* 销毁动物识别引擎 */
-static void destroy_animal_recognition_engine(void)
+/* 停止实时动物检测服务 */
+static void stop_anip_service(void)
 {
-    if (s_is_ktani_init == false) {
-        kt_ani_destroy();
-        s_is_ktani_init = true;
-        MLOG_INFO("[Animal] 动物识别引擎已销毁\n");
-    }
-}
+    /* 先禁用，防止新的回调触发 */
+    s_anip_enabled = false;
 
-/* 动物识别加载动画定时器回调 */
-static void animal_loading_timer_cb(lv_timer_t *timer)
-{
-    if (s_ani_loading_scr == NULL || !lv_obj_is_valid(s_ani_loading_scr)) {
-        if (timer) {
-            lv_timer_del(timer);
-        }
-        s_ani_loading_timer = NULL;
-        return;
+    /* 销毁服务（这会停止任务线程并等待其结束） */
+    if (g_anip_handle >= 0) {
+        /* 先清除OSD层的框 */
+        ANIP_SERVICE_Clear_Rects(g_anip_handle);
+        ANIP_SERVICE_Destroy(g_anip_handle);
+        g_anip_handle = -1;
     }
 
-    // 查找提示标签并更新
-    lv_obj_t *label = (lv_obj_t *)lv_timer_get_user_data(timer);
-    if (label != NULL && lv_obj_is_valid(label)) {
-        s_loading_dot_count = (s_loading_dot_count + 1) % 4;
-        char dots[8] = "";
-        for (int i = 0; i < s_loading_dot_count; i++) {
-            strcat(dots, ".");
-        }
+    /* 注销回调（在销毁服务之后） */
+    ANIP_SERVICE_Unregister_DrawRects_Callback();
+    ANIP_SERVICE_Unregister_Result_Callback();
 
-        char text[128];
-        if (s_init_stage == 1) {
-            // 初始化阶段
-            snprintf(text, sizeof(text), "%s%s", str_language_initializing_ai_model[get_curr_language()], dots);
-        } else if (s_init_stage == 2) {
-            // 识别阶段
-            snprintf(text, sizeof(text), "%s%s", str_language_recognizing_animal[get_curr_language()], dots);
-        } else {
-            snprintf(text, sizeof(text), "%s%s", str_language_initializing_ai_model[get_curr_language()], dots);
-        }
-        lv_label_set_text(label, text);
-    }
-}
-
-/* 显示动物识别加载页面（在photoscr上创建透明容器，作为msgbox的父控件） */
-static void show_animal_loading_page(void)
-{
-    // 清理之前的加载页面
-    hide_animal_loading_page();
-    if (s_ani_loading_scr != NULL) {
-        lv_obj_del(s_ani_loading_scr);
-        s_ani_loading_scr = NULL;
-    }
-
-    // 在photoscr上创建透明容器（msgbox的父控件）
-    if (g_ui.page_photo.photoscr == NULL || !lv_obj_is_valid(g_ui.page_photo.photoscr)) {
-        MLOG_ERR("[Animal] photoscr is invalid!\n");
-        return;
-    }
-
-    s_ani_loading_scr = lv_obj_create(g_ui.page_photo.photoscr);
-    if (s_ani_loading_scr == NULL) {
-        MLOG_ERR("[Animal] Failed to create loading screen!\n");
-        return;
-    }
-
-    // 设置为透明，覆盖photoscr
-    lv_obj_set_size(s_ani_loading_scr, H_RES, V_RES);
-    lv_obj_set_style_bg_opa(s_ani_loading_scr, LV_OPA_TRANSP, LV_PART_MAIN | LV_STATE_DEFAULT);
-
-    // 创建加载提示标签
-    lv_obj_t *loading_label = lv_label_create(s_ani_loading_scr);
-    if (loading_label != NULL) {
-        lv_label_set_text(loading_label, str_language_initializing_ai_model[get_curr_language()]);
-        lv_obj_set_style_text_font(loading_label, get_usr_fonts(ALI_PUHUITI_FONTPATH, 24), 0);
-        lv_obj_set_style_text_color(loading_label, lv_color_white(), 0);
-        lv_obj_center(loading_label);
-    }
-
-    // 创建加载动画定时器
-    s_loading_dot_count = 0;
-    s_ani_loading_timer = lv_timer_create(animal_loading_timer_cb, 500, loading_label);
-
-    MLOG_DBG("[Animal] Loading page shown\n");
-}
-
-/* 隐藏动物识别加载页面（仅删除定时器，不删除容器） */
-static void hide_animal_loading_page(void)
-{
-    if (s_ani_loading_timer != NULL) {
-        lv_timer_del(s_ani_loading_timer);
-        s_ani_loading_timer = NULL;
-    }
-
-    if (s_ani_loading_scr != NULL) {
-        if (lv_obj_is_valid(s_ani_loading_scr)) {
-            lv_obj_del(s_ani_loading_scr);
-        }
-        s_ani_loading_scr = NULL;
-    }
-}
-
-/* 动物识别线程函数 */
-static void *animal_recognition_thread(void *arg)
-{
-    const char *image_path = (const char *)arg;
-
-    MLOG_INFO("[Animal] 开始动物识别，图片路径: %s\n", image_path);
-
-    // 初始化引擎（如果还未初始化）
-    if (init_animal_recognition_engine() != 0) {
-        animal_recognition_callback("动物识别引擎初始化失败");
-        pthread_exit(NULL);
-        return NULL;
-    }
-
-    // 设置为识别阶段
-    s_init_stage = 2;
-
-    // 执行动物识别
-    memset(s_animal_result, 0, sizeof(s_animal_result));
-    KTAniError ret;
-
-    struct KTAniInfo det_results[10];
-    struct KTAniInfo rec_results[10];
-    int det_count = 10;
-    int rec_count = 10;
-
-    memset(det_results, 0, sizeof(det_results));
-    memset(rec_results, 0, sizeof(rec_results));
-
-    // 第一步：动物检测
-     ret = kt_ani_task(s_recognize_image_path, KT_TASK_DET_ANI, det_results, &det_count);
-    if (ret != KT_ANI_OK) {
-        MLOG_ERR("[Animal] 动物检测失败: %d\n", ret);
-        snprintf(s_animal_result, sizeof(s_animal_result), "动物检测失败");
-        s_init_stage = 0;
-        animal_recognition_callback(s_animal_result);
-        pthread_exit(NULL);
-        return NULL;
-    }
-
-    if (det_count == 0) {
-        MLOG_INFO("[Animal] 未检测到动物\n");
-        snprintf(s_animal_result, sizeof(s_animal_result), "未检测到动物");
-        s_init_stage = 0;
-        animal_recognition_callback(s_animal_result);
-        pthread_exit(NULL);
-        return NULL;
-    }
-
-    MLOG_INFO("[Animal] 检测到 %d 个动物\n", det_count);
-
-    // 第二步：动物识别
-    ret = kt_ani_task(image_path, KT_TASK_REC_ANI, rec_results, &rec_count);
-    if (ret != KT_ANI_OK) {
-        MLOG_ERR("[Animal] 动物识别失败: %d\n", ret);
-        snprintf(s_animal_result, sizeof(s_animal_result), "动物识别失败");
-        s_init_stage = 0;
-        animal_recognition_callback(s_animal_result);
-        pthread_exit(NULL);
-        return NULL;
-    }
-
-    MLOG_INFO("[Animal] 识别出 %d 个动物\n", rec_count);
-
-    // 格式化结果
-    snprintf(s_animal_result, sizeof(s_animal_result), "检测到 %d 个动物:\n", rec_count);
-    for (int i = 0; i < rec_count && i < ANI_MAX_RESULTS; i++) {
-        const char *name = get_animal_name_by_id(rec_results[i].ani_idx);
-        char temp[128] = {0};
-        snprintf(temp, sizeof(temp), "%d. %s (置信度:%.0f%%)\n",
-                 i + 1, name, rec_results[i].confidence * 100);
-        strncat(s_animal_result, temp, sizeof(s_animal_result) - strlen(s_animal_result) - 1);
-    }
-
-    s_init_stage = 0;
-    animal_recognition_callback(s_animal_result);
-
-    pthread_exit(NULL);
-    return NULL;
-}
-
-/* 主线程中执行识别结果UI更新 */
-static void animal_recognition_ui_update(void *user_data)
-{
-    char *result = (char *)user_data;
-
-    s_is_animal_recognizing = false;
-
-    if (result != NULL && strlen(result) > 0) {
-        MLOG_INFO("[Animal] 识别结果: %s\n", result);
-
-        // 在s_ani_loading_scr上创建识别结果弹窗
-        if (s_ani_loading_scr != NULL && lv_obj_is_valid(s_ani_loading_scr)) {
-            mbox_s = lv_msgbox_create(s_ani_loading_scr);
-            if (mbox_s != NULL) {
-                // 设置标题
-                lv_obj_t *title = lv_msgbox_add_title(mbox_s, str_language_animal_recognition_result[get_curr_language()]);
-                if (title != NULL) {
-                    lv_obj_set_style_text_font(title, get_usr_fonts(ALI_PUHUITI_FONTPATH, 20), LV_PART_MAIN | LV_STATE_DEFAULT);
-                }
-                // 添加结果文本
-                lv_obj_t *text = lv_msgbox_add_text(mbox_s, result);
-                if (text != NULL) {
-                    lv_obj_set_style_text_font(text, get_usr_fonts(ALI_PUHUITI_FONTPATH, 18), LV_PART_MAIN | LV_STATE_DEFAULT);
-                    // 设置文本区域可滚动
-                    lv_obj_add_flag(text, LV_OBJ_FLAG_SCROLLABLE);
-                }
-                // 添加关闭按钮
-                lv_obj_t *btn = lv_msgbox_add_footer_button(mbox_s, "OK");
-                if (btn != NULL) {
-                    lv_obj_set_style_bg_color(btn, lv_color_hex(0x171717), LV_PART_MAIN | LV_STATE_DEFAULT);
-                    lv_obj_set_style_text_font(btn, get_usr_fonts(ALI_PUHUITI_FONTPATH, 16), LV_PART_MAIN | LV_STATE_DEFAULT);
-                    lv_obj_add_event_cb(btn, animal_msgbox_close_cb, LV_EVENT_CLICKED, mbox_s);
-                }
-                // 设置msgbox大小
-                lv_obj_set_width(mbox_s, 320);
-                lv_obj_set_height(mbox_s, 180);
-                lv_obj_center(mbox_s);
-            }
-        }
-    } else {
-        MLOG_WARN("[Animal] 识别结果为空\n");
-        // 识别失败，清理加载页面
-        hide_animal_loading_page();
-        if (s_ani_loading_scr != NULL && lv_obj_is_valid(s_ani_loading_scr)) {
-            lv_obj_del(s_ani_loading_scr);
-        }
-        s_ani_loading_scr = NULL;
-    }
-
-    // 释放线程分配的结果内存
-    free(result);
-}
-
-/* 动物识别完成回调（可从子线程安全调用） */
-static void animal_recognition_callback(const char *result)
-{
-    // 分配内存拷贝结果，传递给主线程使用
-    char *result_copy = NULL;
-    if (result != NULL && strlen(result) > 0) {
-        result_copy = strdup(result);
-        if (result_copy == NULL) {
-            MLOG_ERR("[Animal] strdup failed\n");
-            return;
-        }
-    }
-    // 通过lv_async_call将UI操作调度到LVGL主线程执行
-    lv_async_call(animal_recognition_ui_update, result_copy);
-}
-
-/* 动物识别结果弹窗关闭回调 */
-static void animal_msgbox_close_cb(lv_event_t *e)
-{
-    // 1. 删除定时器
-    if (s_ani_loading_timer != NULL) {
-        lv_timer_del(s_ani_loading_timer);
-        s_ani_loading_timer = NULL;
-    }
-
-    // 2. 删除整个s_ani_loading_scr（会同时递归删除msgbox和加载标签）
-    //    不需要单独调用lv_msgbox_close，因为mbox是s_ani_loading_scr的子控件，
-    //    删除父对象会自动递归删除所有子对象，单独关闭mbox后再删父对象会导致double free崩溃
-    if (s_ani_loading_scr != NULL) {
-        if (lv_obj_is_valid(s_ani_loading_scr)) {
-            lv_obj_del(s_ani_loading_scr);
-        }
-        s_ani_loading_scr = NULL;
-    }
-
-    mbox_s = NULL;
+    MLOG_INFO("[ANIP] Real-time animal detection service stopped\n");
 }

@@ -335,13 +335,13 @@ static void gesture_event_handler(lv_event_t *e)
          "cur 4",
          "cur 5",
          "cur 6",
-         "cur 7",
-         "cur 8",
+        //  "cur 7",
+        //  "cur 8",
      };
      const char* cursor_image_array[] = {
          "Icon_1_cross_Red_menu.png",
-         "Icon_2_cross_Red_menu.png",
-         "Icon_3_cross_RED_menu.png",
+        //  "Icon_2_cross_Red_menu.png",
+        //  "Icon_3_cross_RED_menu.png",
          "Icon_4_cross_RED_menu.png",
          "Icon_5_cross_Red_menu.png",
          "Icon_6_cross_Red_menu.png",

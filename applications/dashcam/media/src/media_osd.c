@@ -14,6 +14,9 @@
 #include "param.h"
 #include "media_init.h"
 #include "bitmap.h"
+#ifdef SERVICES_ANIP_ON
+#include "anip_service.h"
+#endif
 #ifdef GPS_ON
 #include "gpsmng.h"
 static GPSMNG_CALLBACK GpsCallback = {0};
@@ -344,6 +347,10 @@ int32_t MEDIA_StartOsd(void)
 
 #ifdef SERVICES_FACEP_ON
     FACEP_SERVICE_Register_DrawRects_Callback(MEDIA_DrawRects);
+#endif
+
+#ifdef SERVICES_ANIP_ON
+    ANIP_SERVICE_Register_DrawRects_Callback(MEDIA_DrawRects);
 #endif
 
     g_mediaOsdCtx.init = true;
