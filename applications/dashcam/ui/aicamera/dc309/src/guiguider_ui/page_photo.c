@@ -645,6 +645,10 @@ static void photo_play_callback(void)
 {
     restore_icon_on_any_key(); // 任意键恢复图标
 
+    extern bool is_animal_recognition_page;
+    if (!is_animal_recognition_page)
+        return;
+
     if (s_anip_enabled) {
         /* 当前已开启，关闭检测 */
         MLOG_INFO("[ANIP] Turning OFF animal detection\n");
