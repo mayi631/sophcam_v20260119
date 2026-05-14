@@ -59,9 +59,9 @@ define print_target
 endef
 
 .PHONY: all clean clean_all install
-.PHONY: ffmpeg awtkcode thttpd lvgl
+.PHONY: ffmpeg awtkcode thttpd lvgl kt_ani_sdk
 
-all: ffmpeg awtkcode thttpd lvgl
+all: ffmpeg awtkcode thttpd lvgl kt_ani_sdk
 	$(call print_target)
 
 ffmpeg:
@@ -115,9 +115,14 @@ ifeq ($(CONFIG_OSS_LVGL),y)
 	$(Q)fi
 endif
 
+kt_ani_sdk:
+	$(call print_target)
+	$(MAKE) -C $(CURDIR)/kt_ani_sdk $(MAKECMDGOALS)
+
 clean:
 	$(call print_target)
 	# oss do nothing for command clean
+	$(MAKE) -C $(CURDIR)/kt_ani_sdk clean 2>/dev/null || true
 
 clean_all:
 	$(call print_target)

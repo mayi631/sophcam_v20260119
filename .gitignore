@@ -16,6 +16,8 @@ components/comps_install/arm-none-linux-musleabihf/cvi_mpi/lib/
 components/comps_install/arm-none-linux-musleabihf/cvi_tdl_sdk/lib/
 components/comps_install/arm-none-linux-musleabihf/hal/lib/
 components/comps_install/arm-none-linux-musleabihf/mapi/lib/
+components/comps_install/arm-none-linux-musleabihf/cvi_mpi/include/
+components/comps_install/arm-none-linux-musleabihf/cvi_tdl_sdk/include/
 
 oss/awtkcode/awtk-linux-fb/build/
 oss/ffmpeg/build/

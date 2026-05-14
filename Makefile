@@ -111,9 +111,9 @@ endif
 
 	rm -rf $(INSTALL_PATH)/bin/ai_model
 	mkdir -p $(INSTALL_PATH)/bin/ai_model
-	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/lib/ $(INSTALL_PATH)/bin/ai_model
-	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/bin/user_config.json $(INSTALL_PATH)/bin/ai_model
-	cp -rf $(SRCTREE)/components/comps_install/arm-none-linux-musleabihf/kt_ani_sdk/bin/resource/* $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/oss/kt_ani_sdk/lib/ $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/oss/kt_ani_sdk/bin/user_config.json $(INSTALL_PATH)/bin/ai_model
+	cp -rf $(SRCTREE)/oss/kt_ani_sdk/bin/resource/* $(INSTALL_PATH)/bin/ai_model
 
 clean: $(TOPSUBDIRS)
 	$(call print_target)
