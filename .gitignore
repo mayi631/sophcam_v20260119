@@ -53,7 +53,7 @@ oss/lvgl/install/arm-none-linux-musleabihf/lib/liblvgl_examples.a
 oss/lvgl/install/arm-none-linux-musleabihf/lib/liblvgl_thorvg.a
 
 # 应用和服务的特定编译库
-app_services/lib/libapp_service.a
+app_services/lib/
 applications/manager/lib/libapp_mng.a
 applications/manager/lib/libapp_mng.so
 

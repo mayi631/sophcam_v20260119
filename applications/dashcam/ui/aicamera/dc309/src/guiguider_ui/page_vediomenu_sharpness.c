@@ -28,15 +28,8 @@ uint8_t getSharness_index(void)
 
 static void sharpness_Del_Complete_anim_cb(lv_anim_t *a)
 {
-    if(obj_Vedio_Sharpness_s != NULL) {
-        if(lv_obj_is_valid(obj_Vedio_Sharpness_s)) {
-            lv_obj_del(obj_Vedio_Sharpness_s);
-        } else {
-        }
-        obj_Vedio_Sharpness_s = NULL;
-        ui_load_scr_animation(&g_ui, &obj_vedioMenu_s, 1, NULL, vedioMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
-                              true);
-    }
+    ui_load_scr_animation(&g_ui, &obj_vedioMenu_s, 1, NULL, vedioMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
+                            true);
 }
 
 static void sharpness_win_Delete_anim(void)

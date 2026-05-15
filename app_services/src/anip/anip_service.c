@@ -384,26 +384,11 @@ static CVI_VOID anip_task_entry(CVI_VOID *arg) {
             frame_info.width = frame_width;
             frame_info.height = frame_height;
 
-#ifdef ANIP_DEBUG_SAVE_FRAME
-            {
-                static int save_count = 0;
-                char filename[64];
-                snprintf(filename, sizeof(filename), "/mnt/sd/anip_frame_%03d_%dx%d.nv12",
-                         save_count++, frame_info.width, frame_info.height);
-                FILE *fp = fopen(filename, "wb");
-                if (fp)
-                {
-                    /* 写入 Y 平面 + UV 平面 (NV12格式) */
-                    fwrite(pFrameData, 1, total_copy_size, fp);
-                    fclose(fp);
-                }
-            }
-#endif
             /* 调试：保存 frame_info.data 到文件检查 YUV 数据是否正常 */
-            ret = kt_ani_task_from_memory(&frame_info, KT_TASK_DET_ANI, ani_results, &result_count);
+            ret = kt_ani_task_from_memory(&frame_info, KT_TASK_REC_ANI, ani_results, &result_count);
             if (ret != KT_ANI_OK)
             {
-#if 0
+#ifdef ANIP_DEBUG_SAVE_FRAME
                 {
                     static int save_count = 0;
                     char filename[64];

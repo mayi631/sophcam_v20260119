@@ -137,15 +137,8 @@ void stlight_init_by_param(int32_t is_on)
 }
  static void stlight_Del_Complete_anim_cb(lv_anim_t *a)
  {
-     if(obj_sysMenu_statuslight_s != NULL) {
-         if(lv_obj_is_valid(obj_sysMenu_statuslight_s)) {
-             lv_obj_del(obj_sysMenu_statuslight_s);
-             obj_sysMenu_statuslight_s = NULL;
-         }
-         obj_sysMenu_statuslight_s = NULL;
-         ui_load_scr_animation(&g_ui, &obj_sysMenu_Setting_s, 1, NULL, sysMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0,
-                               false, true);
-     }
+    ui_load_scr_animation(&g_ui, &obj_sysMenu_Setting_s, 1, NULL, sysMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0,
+                        false, true);
  }
  
  static void stlight_win_Delete_anim(void)

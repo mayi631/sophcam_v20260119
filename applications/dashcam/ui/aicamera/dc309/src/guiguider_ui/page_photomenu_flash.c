@@ -52,16 +52,9 @@ char* photo_getFlash_Label(void)
 
 static void flash_Del_Complete_anim_cb(lv_anim_t *a)
 {
-    if(photomenu_flash_s != NULL) {
-        if(lv_obj_is_valid(photomenu_flash_s)) {
-            lv_obj_del(photomenu_flash_s);
-        } else {
-        }
-        photomenu_flash_s = NULL;
-        ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
-                              NULL, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0,
-                              false, true);
-    }
+    ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
+                            NULL, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0,
+                            false, true);
 }
 
 static void flash_win_Delete_anim(void)

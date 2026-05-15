@@ -52,16 +52,9 @@ void set_self_index(uint8_t index)
 
 static void selfTime_Del_Complete_anim_cb(lv_anim_t *a)
 {
-    if(g_ui.page_selfietime.self_scr != NULL) {
-        if(lv_obj_is_valid(g_ui.page_selfietime.self_scr)) {
-            lv_obj_del(g_ui.page_selfietime.self_scr);
-        } else {
-        }
-        g_ui.page_selfietime.self_scr = NULL;
-        ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
-                              &g_ui.screen_SettingSelfieTime_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
-                              true);
-    }
+    ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
+                            &g_ui.screen_SettingSelfieTime_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
+                            true);
 }
 
 static void selfTime_win_Delete_anim(void)

@@ -111,16 +111,9 @@ const char* photo_getRes_IconByIndex(uint8_t index)
 
 static void res_Del_Complete_anim_cb(lv_anim_t *a)
 {
-    if(g_ui.page_resolution.resscr != NULL) {
-        if(lv_obj_is_valid(g_ui.page_resolution.resscr)) {
-            lv_obj_del(g_ui.page_resolution.resscr);
-        } else {
-        }
-        g_ui.page_resolution.resscr = NULL;
-        ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
-                              &g_ui.screen_SettingResolution_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
-                              true);
-    }
+    ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
+                            &g_ui.screen_SettingResolution_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
+                            true);
 }
 
 static void res_win_Delete_anim(void)

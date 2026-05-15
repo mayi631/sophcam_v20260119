@@ -1,8 +1,0 @@
-Using built-in specs.
-COLLECT_GCC=/home/mayi/SDK_CV184X_DC100/host-tools/gcc/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-linux-musleabihf/bin/arm-none-linux-musleabihf-gcc.br_real
-COLLECT_LTO_WRAPPER=/home/mayi/SDK_CV184X_DC100/host-tools/gcc/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-linux-musleabihf/bin/../libexec/gcc/arm-none-linux-musleabihf/11.3.0/lto-wrapper
-Target: arm-none-linux-musleabihf
-Configured with: ./configure --prefix=/project/buildroot/output/host --sysconfdir=/project/buildroot/output/host/etc --enable-static --target=arm-none-linux-musleabihf --with-sysroot=/project/buildroot/output/host/arm-none-linux-musleabihf/sysroot --enable-__cxa_atexit --with-gnu-ld --disable-libssp --disable-multilib --disable-decimal-float --enable-plugins --enable-lto --with-gmp=/project/buildroot/output/host --with-mpc=/project/buildroot/output/host --with-mpfr=/project/buildroot/output/host --with-pkgversion='Buildroot 2023.02-rc3' --with-bugurl=http://bugs.buildroot.net/ --without-zstd --disable-libmpx --disable-libquadmath --disable-libquadmath-support --disable-libsanitizer --enable-tls --enable-threads --without-isl --without-cloog --with-abi=aapcs-linux --with-cpu=cortex-a53 --with-fpu=neon-vfpv4 --with-float=hard --with-mode=thumb --enable-languages=c,c++,fortran --with-build-time-tools=/project/buildroot/output/host/arm-none-linux-musleabihf/bin --enable-shared --disable-libgomp
-Thread model: posix
-Supported LTO compression algorithms: zlib
-gcc version 11.3.0 (Buildroot 2023.02-rc3) 

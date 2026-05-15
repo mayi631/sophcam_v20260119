@@ -33,20 +33,13 @@ uint8_t getbeauty_Index(void)
 
 static void beauty_Del_Complete_anim_cb(lv_anim_t *a)
 {
-    if(g_ui.page_beauty.beauty_scr != NULL) {
-        if(lv_obj_is_valid(g_ui.page_beauty.beauty_scr)) {
-            lv_obj_del(g_ui.page_beauty.beauty_scr);
-        } else {
-        }
-        g_ui.page_beauty.beauty_scr = NULL;
-        if(ui_Get_PreScreen() == g_ui.page_photoMenu_Setting.menuscr) {
-            ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
-                                  &g_ui.screen_SettingBeauty_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
-                                  true);
-        } else if(ui_Get_PreScreen() == obj_vedioMenu_s) {
-            ui_load_scr_animation(&g_ui, &obj_vedioMenu_s, 1, &g_ui.screen_SettingBeauty_del, vedioMenu_Setting,
-                                  LV_SCR_LOAD_ANIM_NONE, 0, 0, false, true);
-        }
+    if(ui_Get_PreScreen() == g_ui.page_photoMenu_Setting.menuscr) {
+        ui_load_scr_animation(&g_ui, &g_ui.page_photoMenu_Setting.menuscr, g_ui.screenPhotoMenuSetting_del,
+                                &g_ui.screen_SettingBeauty_del, photoMenu_Setting, LV_SCR_LOAD_ANIM_NONE, 0, 0, false,
+                                true);
+    } else if(ui_Get_PreScreen() == obj_vedioMenu_s) {
+        ui_load_scr_animation(&g_ui, &obj_vedioMenu_s, 1, &g_ui.screen_SettingBeauty_del, vedioMenu_Setting,
+                                LV_SCR_LOAD_ANIM_NONE, 0, 0, false, true);
     }
 }
 
